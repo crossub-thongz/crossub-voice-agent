@@ -4,6 +4,10 @@
 
 ### Added
 - Render/PaaS deploy support: the worker binds its health server to the platform `$PORT` on `0.0.0.0` when present (via new `HEALTH_PORT`/`HEALTH_HOST` config), so a Render Web Service deploy passes the port scan; unset locally, keeping LiveKit's defaults.
+
+### Changed
+- Deployment target for the browser tester (`web/`) is **Render**, not Vercel: it runs as a second Render Web Service (Root Directory `web/`, Node, build `npm install && npm run build`, start `npm start` — `next start` binds Render's `$PORT`), sharing the worker's LiveKit creds + `VOICE_AGENT_NAME=crossub-inbound`.
+- Worker deploy on Render (staging, Singapore) requires the Build Command to prefetch the turn-detector model — `uv sync --frozen && uv run crossub-voice-agent download-files` — and a Standard (2 GB) instance; 512 MB OOMs loading VAD + the multilingual turn-detector. Health endpoint returns `OK` when live.
 - `docs/cost-estimate.md` — boss-facing running-cost estimate (~1,000 min/mo ≈ AUD $150/mo; pilot ≈ free), free-tier breakdown, go-live blockers (ElevenLabs commercial licence, Twilio trial), and a bilingual EN/中文 summary.
 - Browser tester UI under `web/` (Next.js 15 + LiveKit React): Start-call button, live EN + 中文 transcript, audio visualizer, agent-state indicator; a server route mints a browser token and dispatches the agent per call.
 - `dev.sh` one-command launcher that runs the agent worker + web tester together (Ctrl+C stops both).
