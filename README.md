@@ -107,11 +107,39 @@ Document what you find — it directly shapes the Phase 1 STT decision.
 ## Layout
 
 ```
-crossub_voice_agent/
+crossub_voice_agent/   # the Python voice agent (LiveKit worker)
   agent.py     # LiveKit worker: entrypoint, STT/LLM/TTS pipeline, metrics
   config.py    # all tunables (env-driven, no magic strings)
   prompts.py   # system persona + the fixed bilingual compliance disclosure
+web/           # Next.js browser tester (see below)
 ```
+
+## Browser tester (`web/`)
+
+A visual way to test the agent from a browser — Start-call button, live EN + 中文 transcript,
+audio visualizer — instead of the terminal `console`. It runs against the same LiveKit project
+and dispatches this agent per call. Uses **npm** (not pnpm).
+
+Run both at once, one terminal (Ctrl+C stops both):
+
+```bash
+./dev.sh           # starts the agent + tester; open http://localhost:3000
+```
+
+Or manually in two terminals:
+
+```bash
+# Terminal 1 — the agent (dev mode connects to LiveKit for the browser):
+uv run crossub-voice-agent dev
+
+# Terminal 2 — the tester UI:
+cd web
+npm install        # first time only
+npm run dev        # http://localhost:3000
+```
+
+The tester reads the same LiveKit creds from `web/.env.local` (already populated). Deployable to
+Vercel (set the project root to `web/`) to share a link with testers / the boss. See `web/README.md`.
 
 ## What's next (Phase 1, in the crossub_web repo)
 
