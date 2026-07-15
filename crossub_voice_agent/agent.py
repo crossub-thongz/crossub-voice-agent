@@ -155,7 +155,15 @@ async def entrypoint(ctx: JobContext) -> None:
 
 
 def main() -> None:
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, agent_name=config.AGENT_NAME))
+    opts: dict = {"entrypoint_fnc": entrypoint, "agent_name": config.AGENT_NAME}
+    # On a PaaS web service (Render/Railway), bind the health server to the
+    # platform-provided $PORT/host so the deploy's port scan succeeds. Unset
+    # locally, keeping LiveKit's own defaults.
+    if config.HEALTH_PORT is not None:
+        opts["port"] = config.HEALTH_PORT
+    if config.HEALTH_HOST:
+        opts["host"] = config.HEALTH_HOST
+    cli.run_app(WorkerOptions(**opts))
 
 
 if __name__ == "__main__":

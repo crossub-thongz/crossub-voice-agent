@@ -3,6 +3,8 @@
 ## 2026-07-15
 
 ### Added
+- Render/PaaS deploy support: the worker binds its health server to the platform `$PORT` on `0.0.0.0` when present (via new `HEALTH_PORT`/`HEALTH_HOST` config), so a Render Web Service deploy passes the port scan; unset locally, keeping LiveKit's defaults.
+- `docs/cost-estimate.md` — boss-facing running-cost estimate (~1,000 min/mo ≈ AUD $150/mo; pilot ≈ free), free-tier breakdown, go-live blockers (ElevenLabs commercial licence, Twilio trial), and a bilingual EN/中文 summary.
 - Browser tester UI under `web/` (Next.js 15 + LiveKit React): Start-call button, live EN + 中文 transcript, audio visualizer, agent-state indicator; a server route mints a browser token and dispatches the agent per call.
 - `dev.sh` one-command launcher that runs the agent worker + web tester together (Ctrl+C stops both).
 - Per-language TTS voice switching: the agent matches its voice to the caller's language each turn, uses a dedicated Chinese voice via `VOICE_TTS_VOICE_ID_ZH`, and enforces the `zh`/`en` language code on flash/turbo v2.5.

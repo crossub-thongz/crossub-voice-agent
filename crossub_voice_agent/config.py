@@ -63,3 +63,13 @@ AGENT_NAME = os.getenv("VOICE_AGENT_NAME", "crossub-inbound")
 # LiveKit Cloud enhanced noise cancellation tuned for phone audio.
 # Requires `uv sync --extra telephony` and a LiveKit Cloud project.
 USE_TELEPHONY_NOISE_CANCELLATION = _flag("VOICE_TELEPHONY_NOISE_CANCELLATION", False)
+
+# --- Health-check HTTP server binding (for PaaS that require an open port) ---
+# The LiveKit worker exposes a health endpoint. Platforms like Render/Railway run
+# this as a web service and expect it to bind the platform-provided $PORT on all
+# interfaces, or the deploy fails ("no open ports detected"). Locally these are
+# unset and the worker keeps LiveKit's own default (8081 in prod). When $PORT is
+# present we also default the host to 0.0.0.0 so the platform's port scan reaches it.
+_health_port_raw = os.getenv("PORT")
+HEALTH_PORT = int(_health_port_raw) if _health_port_raw and _health_port_raw.isdigit() else None
+HEALTH_HOST = os.getenv("HOST") or ("0.0.0.0" if HEALTH_PORT is not None else None)
