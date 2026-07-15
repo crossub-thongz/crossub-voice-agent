@@ -38,8 +38,19 @@ LLM_MODEL = os.getenv("VOICE_LLM_MODEL", "claude-haiku-4-5")
 
 # --- Text-to-speech (ElevenLabs) ---
 TTS_MODEL = os.getenv("VOICE_TTS_MODEL", "eleven_flash_v2_5")
-# Optional multilingual voice id; None => plugin default voice.
+# English / default voice id (None => the ElevenLabs plugin default voice).
 TTS_VOICE_ID = os.getenv("VOICE_TTS_VOICE_ID") or None
+# Dedicated Chinese (中文) voice id. When the caller speaks Chinese the agent
+# switches to this voice so Mandarin is spoken by a native-sounding voice instead
+# of the English voice reading it with an accent. None => reuse TTS_VOICE_ID (still
+# improved by the enforced zh language code below on flash/turbo v2.5).
+TTS_VOICE_ID_ZH = os.getenv("VOICE_TTS_VOICE_ID_ZH") or None
+# Only these models accept an explicit language_code (enforced pronunciation).
+# multilingual_v2 auto-detects and rejects language_code, so we must not send it.
+_LANGUAGE_ENFORCING_MODELS = frozenset(
+    {"eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3"}
+)
+TTS_LANGUAGE_ENFORCED = TTS_MODEL in _LANGUAGE_ENFORCING_MODELS
 # The ElevenLabs plugin defaults to reading ELEVEN_API_KEY; we standardize on the
 # clearer ELEVENLABS_API_KEY and pass it explicitly (accepting either name).
 TTS_API_KEY = os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY") or None

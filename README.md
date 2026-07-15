@@ -65,6 +65,27 @@ Speak to it in English, then in 中文. Check:
 The terminal logs per-turn latency metrics (end-of-utterance, time-to-first-token,
 time-to-first-byte) and a usage summary on exit — that's your latency + cost evidence.
 
+### Bilingual voice quality (中文)
+
+The agent **matches its voice to the caller's language every turn** — English replies use the
+English voice, Chinese replies switch to a Chinese voice — and enforces the `zh`/`en` language
+code (on `eleven_flash_v2_5` / `eleven_turbo_v2_5`) so Mandarin is pronounced correctly. The
+opening compliance disclosure is likewise spoken with the English voice for its English half and
+the Chinese voice for its 中文 half.
+
+For **native-sounding** Mandarin (not the English voice speaking Chinese), set a dedicated
+Chinese voice in `.env`:
+
+```
+VOICE_TTS_VOICE_ID_ZH=<a Chinese voice id>
+```
+
+Get one from the **ElevenLabs Voice Library** (elevenlabs.io/app/voice-library → filter
+*Language = Chinese* → pick a conversational voice → *Add to my voices* → copy its Voice ID).
+Left blank, Chinese is still spoken by the English voice but with the enforced `zh` language
+code — better than before, but a dedicated voice is the real fix. For maximum 中文 quality at
+some latency cost, A/B `VOICE_TTS_MODEL=eleven_multilingual_v2`.
+
 ## 5. Test over a real phone number — SIP
 
 Once `console` mode feels good, wire up telephony:

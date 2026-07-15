@@ -7,11 +7,15 @@ reviewed and edited without touching the agent code.
 from __future__ import annotations
 
 # Fixed, exact-wording compliance line spoken at answer time via `session.say`
-# (NOT LLM-generated, so the legal wording is guaranteed). Bilingual EN + 中文.
-# AU call-recording consent + AI disclosure + human-handoff right.
-DISCLOSURE = (
+# (NOT LLM-generated, so the legal wording is guaranteed). AU call-recording
+# consent + AI disclosure + human-handoff right.
+# Split into two halves so each is spoken by its own-language voice (the English
+# voice reads the 中文 half with an accent otherwise). See agent.entrypoint.
+DISCLOSURE_EN = (
     "Hi, you've reached CROSSUB. This call is handled by an AI assistant and may be "
-    "recorded for quality and record-keeping. You can ask to speak with a person at any time. "
+    "recorded for quality and record-keeping. You can ask to speak with a person at any time."
+)
+DISCLOSURE_ZH = (
     "您好，这里是 CROSSUB。本次通话由 AI 智能助手接听，并可能会被录音以保证服务质量和存档。"
     "您可以随时要求转接人工客服。"
 )
