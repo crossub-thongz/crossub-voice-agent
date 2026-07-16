@@ -20,6 +20,21 @@ token (returned as `verificationToken`) that scopes every later read to this
 caller's property only. The token is threaded back into each read call's body as
 `verificationToken` and is NEVER spoken to the caller.
 
+Landlord/owner and contractor/tradie callers reuse the same two-gate model, each with
+its OWN verify tool (separate per caller type so the LLM's branch is unambiguous) and a
+set of token-scoped reads. The minted token carries the caller type, so a landlord token
+can only read landlord endpoints and a contractor token only contractor endpoints:
+  - verify_landlord_identity(name, address)      -> POST /api/voice/verify-identity (callerType 'landlord')
+  - get_landlord_account_summary / get_landlord_portfolio / get_landlord_maintenance /
+    get_landlord_next_inspection / get_landlord_income
+                                                  -> POST /api/voice/landlord/*
+  - verify_contractor_identity(name, reference)  -> POST /api/voice/verify-identity (callerType 'contractor')
+  - get_contractor_jobs / get_contractor_job_status
+                                                  -> POST /api/voice/contractor/*
+Each verify tool mints its own callerType-scoped token; the read tools thread it back
+into their body as `verificationToken` exactly as the tenant reads do, and it is NEVER
+spoken to the caller.
+
 Every call is authenticated to the Nest side with the `x-voice-service-token`
 header (shared machine secret, see config.VOICE_SERVICE_TOKEN).
 
@@ -57,6 +72,28 @@ _RENT_STATUS_PATH = "/api/voice/tenant/rent"
 _NEXT_INSPECTION_PATH = "/api/voice/tenant/next-inspection"
 _MAINTENANCE_STATUS_PATH = "/api/voice/tenant/maintenance-status"
 _LEASE_DETAILS_PATH = "/api/voice/tenant/lease"
+
+# The caller-type discriminator the shared verify-identity endpoint branches on. The
+# tenant path omits it (defaults to tenant on the Nest side); landlord and contractor
+# callers each get a dedicated verify tool that sends its own literal here. Fixed
+# contract shared with the Nest voice module's CallerType — do not rename.
+_CALLER_TYPE_LANDLORD = "landlord"
+_CALLER_TYPE_CONTRACTOR = "contractor"
+
+# Token-scoped LANDLORD/OWNER reads (Phase 1 extension). The landlord verification
+# token minted by verify-identity (callerType 'landlord') is threaded into every read
+# body as `verificationToken`, exactly like the tenant reads (do not rename).
+_LANDLORD_ACCOUNT_SUMMARY_PATH = "/api/voice/landlord/account-summary"
+_LANDLORD_PROPERTIES_PATH = "/api/voice/landlord/properties"
+_LANDLORD_MAINTENANCE_STATUS_PATH = "/api/voice/landlord/maintenance-status"
+_LANDLORD_NEXT_INSPECTION_PATH = "/api/voice/landlord/next-inspection"
+_LANDLORD_INCOME_PATH = "/api/voice/landlord/income"
+
+# Token-scoped CONTRACTOR/TRADIE reads (Phase 1 extension). The contractor
+# verification token (callerType 'contractor') scopes reads to that contractor's own
+# jobs; job-status also carries the caller-supplied work-order/reference number.
+_CONTRACTOR_JOBS_PATH = "/api/voice/contractor/jobs"
+_CONTRACTOR_JOB_STATUS_PATH = "/api/voice/contractor/job-status"
 
 
 def _service_configured() -> bool:
@@ -180,10 +217,11 @@ def _redact_token(result: dict) -> dict:
 async def _tenant_read(
     path: str, verification_token: str, reference: str | None = None
 ) -> dict:
-    """Shared body for the token-scoped tenant read tools: POST the caller's
-    verification token (and optional reference) and return the raw JSON dict for the
-    LLM to speak. The token — not any LLM-supplied id — is what scopes the read to
-    this caller's property, so it is the only auth material these tools send."""
+    """Shared body for every token-scoped read tool (tenant, landlord, and contractor):
+    POST the caller's verification token (and optional reference) and return the raw
+    JSON dict for the LLM to speak. The token — not any LLM-supplied id — is what scopes
+    the read to this caller (and caller type), so it is the only auth material these
+    tools send."""
     payload: dict = {"verificationToken": verification_token}
     if reference is not None:
         payload["reference"] = reference
@@ -328,6 +366,245 @@ async def get_lease_details(verification_token: str) -> dict:
     return result
 
 
+@function_tool
+async def verify_landlord_identity(name: str, address: str) -> dict:
+    """Verify a caller who says they are the LANDLORD / OWNER of a CROSSUB-managed
+    property, BEFORE answering any question about that owner's OWN property, tenancy,
+    maintenance, inspection, or income. Call this once you have BOTH the caller's full
+    name AND the address of a property they own. On success the backend mints a
+    short-lived verification token scoped to THIS owner's own properties only; keep it
+    in context and pass it to the landlord read tools. Never reveal the match outcome,
+    the reason, or the token to the caller, and never mix it with tenant or contractor
+    data.
+
+    Args:
+        name: The caller's full name, exactly as they gave it.
+        address: The street address of a property they say they own, exactly as given.
+
+    Returns:
+        A dict. When the backend is reachable: {"verified": bool,
+        "verificationToken"?: str, "matchedName"?: str, "propertyAddress"?: str,
+        "reason"?: str}. When verified is true, use the "verificationToken" value as the
+        verification_token argument for every landlord read tool — and NEVER speak it.
+        When it is unreachable or not configured: {"ok": false, ...} — treat that as
+        "cannot verify right now" and tell the caller a team member will follow up.
+        NEVER reveal to the caller whether or why verification failed.
+    """
+    result = await _post(
+        _VERIFY_IDENTITY_PATH,
+        {"name": name, "address": address, "callerType": _CALLER_TYPE_LANDLORD},
+    )
+    logger.info(
+        "verify_landlord_identity(name=%r, address=%r) -> %s",
+        name,
+        address,
+        _redact_token(result),
+    )
+    return result
+
+
+@function_tool
+async def verify_contractor_identity(name: str, reference: str) -> dict:
+    """Verify a caller who says they are the CONTRACTOR / TRADIE assigned to CROSSUB
+    work, BEFORE answering any question about their jobs. Call this once you have BOTH
+    the caller's full name AND a work-order / reference number for one of their jobs. On
+    success the backend mints a short-lived verification token scoped to THIS
+    contractor's own jobs only; keep it in context and pass it to the contractor read
+    tools. Never reveal the match outcome, the reason, or the token to the caller, and
+    never mix it with tenant or landlord data.
+
+    Args:
+        name: The caller's full name, exactly as they gave it.
+        reference: The work-order / job reference number the caller gave, exactly as
+            given.
+
+    Returns:
+        A dict. When the backend is reachable: {"verified": bool,
+        "verificationToken"?: str, "matchedName"?: str, "reason"?: str}. When verified
+        is true, use the "verificationToken" value as the verification_token argument
+        for every contractor read tool — and NEVER speak it. When it is unreachable or
+        not configured: {"ok": false, ...} — treat that as "cannot verify right now"
+        and tell the caller a team member will follow up. NEVER reveal to the caller
+        whether or why verification failed.
+    """
+    result = await _post(
+        _VERIFY_IDENTITY_PATH,
+        {"name": name, "reference": reference, "callerType": _CALLER_TYPE_CONTRACTOR},
+    )
+    logger.info(
+        "verify_contractor_identity(name=%r, reference=%r) -> %s",
+        name,
+        reference,
+        _redact_token(result),
+    )
+    return result
+
+
+@function_tool
+async def get_landlord_account_summary(verification_token: str) -> dict:
+    """Get a friendly overview of the verified LANDLORD's account (their properties, a
+    snapshot of what's active). ONLY call this after verify_landlord_identity returned
+    verified:true, passing its verificationToken. Answer only what the caller asked, and
+    only about their OWN properties.
+
+    Args:
+        verification_token: The verificationToken returned by verify_landlord_identity.
+            Never invent it and never read it aloud.
+
+    Returns:
+        A dict. When reachable: a free-form owner account-summary object to speak from.
+        When unreachable/unconfigured or the token is rejected: {"ok": false, ...} —
+        tell the caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(_LANDLORD_ACCOUNT_SUMMARY_PATH, verification_token)
+    logger.info("get_landlord_account_summary(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_landlord_portfolio(verification_token: str) -> dict:
+    """List the verified LANDLORD's own properties with each one's occupancy status and
+    the tenant's NAME (never the tenant's email or phone). ONLY call this after
+    verify_landlord_identity returned verified:true, passing its verificationToken.
+
+    Args:
+        verification_token: The verificationToken returned by verify_landlord_identity.
+            Never invent it and never read it aloud.
+
+    Returns:
+        A dict describing the owner's properties (address, occupancy status, tenant
+        name). When unreachable/unconfigured or the token is rejected: {"ok": false,
+        ...} — tell the caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(_LANDLORD_PROPERTIES_PATH, verification_token)
+    logger.info("get_landlord_portfolio(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_landlord_maintenance(
+    verification_token: str, reference: str | None = None
+) -> dict:
+    """Get the status of maintenance requests on the verified LANDLORD's own
+    properties. ONLY call this after verify_landlord_identity returned verified:true,
+    passing its verificationToken. If the caller mentions a specific reference or job
+    number, pass it as `reference` to narrow the result; otherwise omit it to list the
+    requests across their properties.
+
+    Args:
+        verification_token: The verificationToken returned by verify_landlord_identity.
+            Never invent it and never read it aloud.
+        reference: Optional maintenance request reference / job number the caller gave,
+            to look up one specific request.
+
+    Returns:
+        A dict describing the maintenance request(s) on the owner's properties. When
+        unreachable/unconfigured or the token is rejected: {"ok": false, ...} — tell the
+        caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(
+        _LANDLORD_MAINTENANCE_STATUS_PATH, verification_token, reference
+    )
+    logger.info(
+        "get_landlord_maintenance(token=***, reference=%r) -> %s", reference, result
+    )
+    return result
+
+
+@function_tool
+async def get_landlord_next_inspection(verification_token: str) -> dict:
+    """Get the next upcoming inspection across the verified LANDLORD's own properties so
+    you can tell them when someone is next attending one of their properties. ONLY call
+    this after verify_landlord_identity returned verified:true, passing its
+    verificationToken.
+
+    Args:
+        verification_token: The verificationToken returned by verify_landlord_identity.
+            Never invent it and never read it aloud.
+
+    Returns:
+        A dict describing the next inspection, or one indicating there is none. When
+        unreachable/unconfigured or the token is rejected: {"ok": false, ...} — tell the
+        caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(_LANDLORD_NEXT_INSPECTION_PATH, verification_token)
+    logger.info("get_landlord_next_inspection(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_landlord_income(verification_token: str) -> dict:
+    """Get the verified LANDLORD's income position for their OWN properties — the
+    rent-received status, any arrears amount owed on their properties, and the net
+    income to them. ONLY call this after verify_landlord_identity returned verified:true,
+    passing its verificationToken. Speak only what the tool returned; never invent or
+    round a figure.
+
+    Args:
+        verification_token: The verificationToken returned by verify_landlord_identity.
+            Never invent it and never read it aloud.
+
+    Returns:
+        A dict with the owner's rent-received status, arrears amount, and net income for
+        their own properties. When unreachable/unconfigured or the token is rejected:
+        {"ok": false, ...} — tell the caller you couldn't retrieve it and a team member
+        will follow up.
+    """
+    result = await _tenant_read(_LANDLORD_INCOME_PATH, verification_token)
+    logger.info("get_landlord_income(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_contractor_jobs(verification_token: str) -> dict:
+    """List the verified CONTRACTOR's own current jobs (each with its site address,
+    status, type, urgency, description, and scheduled date). ONLY call this after
+    verify_contractor_identity returned verified:true, passing its verificationToken.
+    Never state a price or quote, and never read out tenant name or phone — the site
+    address is only for access.
+
+    Args:
+        verification_token: The verificationToken returned by
+            verify_contractor_identity. Never invent it and never read it aloud.
+
+    Returns:
+        A dict listing the contractor's own jobs. When unreachable/unconfigured or the
+        token is rejected: {"ok": false, ...} — tell the caller you couldn't retrieve it
+        and a team member will follow up.
+    """
+    result = await _tenant_read(_CONTRACTOR_JOBS_PATH, verification_token)
+    logger.info("get_contractor_jobs(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_contractor_job_status(verification_token: str, reference: str) -> dict:
+    """Get the status of ONE of the verified CONTRACTOR's jobs by its work-order /
+    reference number. ONLY call this after verify_contractor_identity returned
+    verified:true, passing its verificationToken plus the caller's reference number.
+    Never state a price or quote, and never read out tenant name or phone.
+
+    Args:
+        verification_token: The verificationToken returned by
+            verify_contractor_identity. Never invent it and never read it aloud.
+        reference: The work-order / job reference number the caller gave, to look up
+            that specific job.
+
+    Returns:
+        A dict describing that job (address, status, type, urgency, description,
+        scheduled date), or one indicating it wasn't found. When unreachable/
+        unconfigured or the token is rejected: {"ok": false, ...} — tell the caller you
+        couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(
+        _CONTRACTOR_JOB_STATUS_PATH, verification_token, reference
+    )
+    logger.info(
+        "get_contractor_job_status(token=***, reference=%r) -> %s", reference, result
+    )
+    return result
+
+
 # Registered on the Agent (see agent.CrossubAssistant). Exposed as one list so the
 # agent wires up "all voice action tools" without knowing their individual names.
 ALL_TOOLS = [
@@ -339,4 +616,13 @@ ALL_TOOLS = [
     get_next_inspection,
     get_maintenance_status,
     get_lease_details,
+    verify_landlord_identity,
+    verify_contractor_identity,
+    get_landlord_account_summary,
+    get_landlord_portfolio,
+    get_landlord_maintenance,
+    get_landlord_next_inspection,
+    get_landlord_income,
+    get_contractor_jobs,
+    get_contractor_job_status,
 ]
