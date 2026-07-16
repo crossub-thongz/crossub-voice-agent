@@ -5,6 +5,7 @@ description = "CROSSUB phone AI voice agent — LiveKit Agents sidecar (Phase 0 
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
+    "httpx>=0.28.1",
     "livekit-agents[anthropic,deepgram,elevenlabs,silero,turn-detector]~=1.0",
     "python-dotenv>=1.0",
 ]

@@ -32,6 +32,7 @@ from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
 from . import config
 from . import prompts
+from . import tools
 
 load_dotenv()
 
@@ -70,10 +71,13 @@ def apply_tts_language(tts: elevenlabs.TTS, lang: str) -> None:
 
 
 class CrossubAssistant(Agent):
-    """The CROSSUB persona (Phase 0: canned FAQ, no backend tools yet)."""
+    """The CROSSUB persona, with the move-out action tools (verify_tenant,
+    create_end_leasing) that POST to the Nest voice API."""
 
     def __init__(self, tts: elevenlabs.TTS) -> None:
-        super().__init__(instructions=prompts.SYSTEM_PROMPT)
+        # Register the Claude function-calling tools (verify_tenant,
+        # create_end_leasing) so the LLM can take real CROSSUB actions mid-call.
+        super().__init__(instructions=prompts.SYSTEM_PROMPT, tools=tools.ALL_TOOLS)
         self._tts_ref = tts
         self._spoken_language: str | None = None
 

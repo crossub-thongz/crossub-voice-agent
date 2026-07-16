@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-16
+
+### Added
+- Move-out by phone: two Claude function-calling tools (`verify_tenant`, `create_end_leasing`) that POST to the Nest `voice` endpoints with the `x-voice-service-token` header, letting the agent verify a tenant then lodge an end-of-lease record mid-call.
+- `VOICE_API_BASE_URL` / `VOICE_SERVICE_TOKEN` config (with `.env.example` docs); when either is unset the tools degrade gracefully — the agent tells the caller a team member will follow up instead of crashing.
+- `httpx` dependency for the async tool HTTP client.
+
+### Changed
+- `SYSTEM_PROMPT` now carries the move-out conversation policy: collect name + address + move-out date, verify, read back and require an explicit "yes", then create — never claim a record was created unless the tool returned `created:true`, and never reveal a verification mismatch reason (anti-fishing). Bilingual EN/中文, the fixed compliance disclosure, and per-language TTS voice switching are unchanged.
+
 ## 2026-07-15
 
 ### Added

@@ -55,6 +55,17 @@ TTS_LANGUAGE_ENFORCED = TTS_MODEL in _LANGUAGE_ENFORCING_MODELS
 # clearer ELEVENLABS_API_KEY and pass it explicitly (accepting either name).
 TTS_API_KEY = os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY") or None
 
+# --- CROSSUB Nest API (voice action endpoints) ---
+# Base URL of the crossub_web Nest API the action tools call to verify tenants and
+# create end-leasing records — e.g. "http://localhost:3010" locally or the Render
+# staging URL. None if unset => the tools degrade gracefully (the agent tells the
+# caller a team member will follow up) instead of firing broken requests.
+VOICE_API_BASE_URL = os.getenv("VOICE_API_BASE_URL") or None
+# Shared machine-auth secret sent as the `x-voice-service-token` header on every
+# tool request; must match the Nest side's VOICE_SERVICE_TOKEN. None if unset =>
+# tools degrade gracefully (never crash the call).
+VOICE_SERVICE_TOKEN = os.getenv("VOICE_SERVICE_TOKEN") or None
+
 # --- Worker ---
 # When set, the worker only runs on explicit dispatch (used for SIP inbound
 # routing). `console` mode ignores this and always runs locally.

@@ -273,6 +273,7 @@ name = "crossub-voice-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx" },
     { name = "livekit-agents", extra = ["anthropic", "deepgram", "elevenlabs", "silero", "turn-detector"] },
     { name = "python-dotenv" },
 ]
@@ -284,6 +285,7 @@ telephony = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "livekit-agents", extras = ["anthropic", "deepgram", "elevenlabs", "silero", "turn-detector"], specifier = "~=1.0" },
     { name = "livekit-plugins-noise-cancellation", marker = "extra == 'telephony'", specifier = "~=0.2" },
     { name = "python-dotenv", specifier = ">=1.0" },
