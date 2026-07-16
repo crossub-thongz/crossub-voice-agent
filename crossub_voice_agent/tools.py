@@ -6,6 +6,20 @@ Two tools back the phone move-out flow:
   - create_end_leasing(property_id, move_out_date, caller_name)
                                                   -> POST /api/voice/end-leasing
 
+The identity + account-reads flow adds an identity check plus five token-scoped
+reads (the caller asks about their OWN rent / inspection / maintenance / lease):
+  - verify_identity(name, address)               -> POST /api/voice/verify-identity
+  - get_account_summary(verification_token)      -> POST /api/voice/tenant/account-summary
+  - get_rent_status(verification_token)          -> POST /api/voice/tenant/rent
+  - get_next_inspection(verification_token)      -> POST /api/voice/tenant/next-inspection
+  - get_maintenance_status(verification_token, reference?)
+                                                  -> POST /api/voice/tenant/maintenance-status
+  - get_lease_details(verification_token)        -> POST /api/voice/tenant/lease
+On a successful verify_identity the Nest side mints a short-lived HMAC verification
+token (returned as `verificationToken`) that scopes every later read to this
+caller's property only. The token is threaded back into each read call's body as
+`verificationToken` and is NEVER spoken to the caller.
+
 Every call is authenticated to the Nest side with the `x-voice-service-token`
 header (shared machine secret, see config.VOICE_SERVICE_TOKEN).
 
@@ -33,6 +47,16 @@ _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
 _VERIFY_TENANT_PATH = "/api/voice/verify-tenant"
 _END_LEASING_PATH = "/api/voice/end-leasing"
+
+# Identity + token-scoped tenant reads (Phase 1). The verification token minted by
+# verify-identity is threaded into every read body as `verificationToken` (fixed
+# contract shared with the Nest voice module — do not rename).
+_VERIFY_IDENTITY_PATH = "/api/voice/verify-identity"
+_ACCOUNT_SUMMARY_PATH = "/api/voice/tenant/account-summary"
+_RENT_STATUS_PATH = "/api/voice/tenant/rent"
+_NEXT_INSPECTION_PATH = "/api/voice/tenant/next-inspection"
+_MAINTENANCE_STATUS_PATH = "/api/voice/tenant/maintenance-status"
+_LEASE_DETAILS_PATH = "/api/voice/tenant/lease"
 
 
 def _service_configured() -> bool:
@@ -144,6 +168,175 @@ async def create_end_leasing(property_id: str, move_out_date: str, caller_name: 
     return result
 
 
+def _redact_token(result: dict) -> dict:
+    """Return a copy of `result` with any minted verification token masked. The
+    prompt already forbids speaking it aloud; this keeps the security credential out
+    of the log sinks too."""
+    if "verificationToken" in result:
+        return {**result, "verificationToken": "***"}
+    return result
+
+
+async def _tenant_read(
+    path: str, verification_token: str, reference: str | None = None
+) -> dict:
+    """Shared body for the token-scoped tenant read tools: POST the caller's
+    verification token (and optional reference) and return the raw JSON dict for the
+    LLM to speak. The token — not any LLM-supplied id — is what scopes the read to
+    this caller's property, so it is the only auth material these tools send."""
+    payload: dict = {"verificationToken": verification_token}
+    if reference is not None:
+        payload["reference"] = reference
+    return await _post(path, payload)
+
+
+@function_tool
+async def verify_identity(name: str, address: str) -> dict:
+    """Verify a caller's identity by full name + property address BEFORE answering any
+    question about their OWN account — rent, upcoming inspection, maintenance, or
+    lease. Call this once you have BOTH the caller's full name AND their property
+    address. On success the backend mints a short-lived verification token that
+    scopes every later read tool to this caller's property only; keep it in context
+    and pass it to the read tools. Never reveal the match outcome, the reason, or the
+    token to the caller.
+
+    Args:
+        name: The caller's full name, exactly as they gave it.
+        address: The property's street address, exactly as the caller gave it.
+
+    Returns:
+        A dict. When the backend is reachable: {"verified": bool,
+        "verificationToken"?: str, "matchedName"?: str, "propertyAddress"?: str,
+        "reason"?: str}. When verified is true, use the "verificationToken" value as
+        the verification_token argument for every read tool — and NEVER speak it.
+        When it is unreachable or not configured: {"ok": false, ...} — treat that as
+        "cannot verify right now" and tell the caller a team member will follow up.
+        NEVER reveal to the caller whether or why verification failed.
+    """
+    result = await _post(_VERIFY_IDENTITY_PATH, {"name": name, "address": address})
+    logger.info(
+        "verify_identity(name=%r, address=%r) -> %s", name, address, _redact_token(result)
+    )
+    return result
+
+
+@function_tool
+async def get_account_summary(verification_token: str) -> dict:
+    """Get a friendly overview of the verified caller's tenancy (property, key dates,
+    a snapshot of what's active). ONLY call this after verify_identity returned
+    verified:true, passing its verificationToken. Answer only what the caller asked.
+
+    Args:
+        verification_token: The verificationToken returned by verify_identity. Never
+            invent it and never read it aloud.
+
+    Returns:
+        A dict. When reachable: a free-form account-summary object to speak from.
+        When unreachable/unconfigured or the token is rejected: {"ok": false, ...} —
+        tell the caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(_ACCOUNT_SUMMARY_PATH, verification_token)
+    logger.info("get_account_summary(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_rent_status(verification_token: str) -> dict:
+    """Get the verified caller's rent status — the weekly rent amount and the date
+    rent is paid up to. ONLY call this after verify_identity returned verified:true,
+    passing its verificationToken. This does NOT include any arrears or amount owing
+    figure — that is intentionally unavailable, so never state or guess one.
+
+    Args:
+        verification_token: The verificationToken returned by verify_identity. Never
+            invent it and never read it aloud.
+
+    Returns:
+        A dict. When reachable: {"weeklyRent"?, "rentPaidUntil"?, "currency"?, ...}
+        (no arrears). When unreachable/unconfigured or the token is rejected:
+        {"ok": false, ...} — tell the caller you couldn't retrieve it and a team
+        member will follow up.
+    """
+    result = await _tenant_read(_RENT_STATUS_PATH, verification_token)
+    logger.info("get_rent_status(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_next_inspection(verification_token: str) -> dict:
+    """Get the verified caller's next upcoming inspection (including routine
+    inspections) so you can tell them when someone is next coming to the property.
+    ONLY call this after verify_identity returned verified:true, passing its
+    verificationToken.
+
+    Args:
+        verification_token: The verificationToken returned by verify_identity. Never
+            invent it and never read it aloud.
+
+    Returns:
+        A dict describing the next inspection, or one indicating there is none. When
+        unreachable/unconfigured or the token is rejected: {"ok": false, ...} — tell
+        the caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(_NEXT_INSPECTION_PATH, verification_token)
+    logger.info("get_next_inspection(token=***) -> %s", result)
+    return result
+
+
+@function_tool
+async def get_maintenance_status(
+    verification_token: str, reference: str | None = None
+) -> dict:
+    """Get the status of the verified caller's maintenance requests for their
+    property. ONLY call this after verify_identity returned verified:true, passing its
+    verificationToken. If the caller mentions a specific reference or job number, pass
+    it as `reference` to narrow the result; otherwise omit it to list their requests.
+
+    Args:
+        verification_token: The verificationToken returned by verify_identity. Never
+            invent it and never read it aloud.
+        reference: Optional maintenance request reference / job number the caller
+            gave, to look up one specific request.
+
+    Returns:
+        A dict describing the caller's maintenance request(s). When
+        unreachable/unconfigured or the token is rejected: {"ok": false, ...} — tell
+        the caller you couldn't retrieve it and a team member will follow up.
+    """
+    result = await _tenant_read(_MAINTENANCE_STATUS_PATH, verification_token, reference)
+    logger.info("get_maintenance_status(token=***, reference=%r) -> %s", reference, result)
+    return result
+
+
+@function_tool
+async def get_lease_details(verification_token: str) -> dict:
+    """Get the verified caller's lease / tenancy details (e.g. term dates and key
+    lease facts) so you can answer questions about their own tenancy. ONLY call this
+    after verify_identity returned verified:true, passing its verificationToken.
+
+    Args:
+        verification_token: The verificationToken returned by verify_identity. Never
+            invent it and never read it aloud.
+
+    Returns:
+        A dict describing the lease / tenancy. When unreachable/unconfigured or the
+        token is rejected: {"ok": false, ...} — tell the caller you couldn't retrieve
+        it and a team member will follow up.
+    """
+    result = await _tenant_read(_LEASE_DETAILS_PATH, verification_token)
+    logger.info("get_lease_details(token=***) -> %s", result)
+    return result
+
+
 # Registered on the Agent (see agent.CrossubAssistant). Exposed as one list so the
 # agent wires up "all voice action tools" without knowing their individual names.
-ALL_TOOLS = [verify_tenant, create_end_leasing]
+ALL_TOOLS = [
+    verify_tenant,
+    create_end_leasing,
+    verify_identity,
+    get_account_summary,
+    get_rent_status,
+    get_next_inspection,
+    get_maintenance_status,
+    get_lease_details,
+]

@@ -3,11 +3,13 @@
 ## 2026-07-16
 
 ### Added
+- Phone account reads (Phase 1, Part B): identity verify + five token-scoped Claude function-calling tools — `verify_identity` (name + address → `POST /api/voice/verify-identity`, mints a `verificationToken`) plus `get_account_summary`, `get_rent_status`, `get_next_inspection`, `get_maintenance_status`, and `get_lease_details`, each POSTing `{"verificationToken": ...}` (maintenance also accepts an optional `reference`) to the Nest `voice` tenant read endpoints via the existing graceful-degrade `_post()` helper.
 - Move-out by phone: two Claude function-calling tools (`verify_tenant`, `create_end_leasing`) that POST to the Nest `voice` endpoints with the `x-voice-service-token` header, letting the agent verify a tenant then lodge an end-of-lease record mid-call.
 - `VOICE_API_BASE_URL` / `VOICE_SERVICE_TOKEN` config (with `.env.example` docs); when either is unset the tools degrade gracefully — the agent tells the caller a team member will follow up instead of crashing.
 - `httpx` dependency for the async tool HTTP client.
 
 ### Changed
+- `SYSTEM_PROMPT` gains an "ACCOUNT QUESTIONS (reads)" policy: for a caller's OWN rent / inspection / maintenance / lease, collect name + address → `verify_identity` → reveal nothing until `verified:true` (never disclose a mismatch reason) → thread the `verificationToken` into every read tool, answer only what was asked in the caller's language, never read another property's data, never invent figures, and never state an arrears/owing amount; the "no account access" limit is narrowed to "until identity is verified." The verification token is never spoken and is redacted from logs. Bilingual EN/中文, the compliance disclosure, and per-language TTS switching are unchanged.
 - `SYSTEM_PROMPT` now carries the move-out conversation policy: collect name + address + move-out date, verify, read back and require an explicit "yes", then create — never claim a record was created unless the tool returned `created:true`, and never reveal a verification mismatch reason (anti-fishing). Bilingual EN/中文, the fixed compliance disclosure, and per-language TTS voice switching are unchanged.
 
 ## 2026-07-15
