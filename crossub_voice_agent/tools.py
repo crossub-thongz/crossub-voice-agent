@@ -35,6 +35,15 @@ Each verify tool mints its own callerType-scoped token; the read tools thread it
 into their body as `verificationToken` exactly as the tenant reads do, and it is NEVER
 spoken to the caller.
 
+Phase 2 adds one WRITE action plus per-call state:
+  - report_maintenance(description, urgent=False)  -> POST /api/voice/maintenance
+A verified TENANT can report a repair mid-call; report_maintenance lodges a real
+MaintenanceRequest. It takes no token/property/id from the LLM — instead every verify
+tool stashes its minted `verificationToken`, the matched caller name, and the caller
+type onto a per-call `CallState` (attached to the session as `userdata`), and
+report_maintenance reads that stash to POST the token + call id + caller name. The same
+CallState feeds the automatic end-of-call Comm Hub log hook (see agent.py / call_log.py).
+
 Every call is authenticated to the Nest side with the `x-voice-service-token`
 header (shared machine secret, see config.VOICE_SERVICE_TOKEN).
 
@@ -50,9 +59,10 @@ from __future__ import annotations
 import logging
 
 import httpx
-from livekit.agents import function_tool
+from livekit.agents import RunContext, function_tool
 
 from . import config
+from .call_state import CallState
 
 logger = logging.getLogger("crossub-voice-agent.tools")
 
@@ -62,6 +72,12 @@ _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 
 _VERIFY_TENANT_PATH = "/api/voice/verify-tenant"
 _END_LEASING_PATH = "/api/voice/end-leasing"
+
+# Maintenance-request lodging (Phase 2). A verified TENANT reports a repair mid-call;
+# report_maintenance POSTs the STORED verification token + call id here so the Nest
+# side derives the property from the token (never a body id). Fixed contract shared
+# with the Nest voice module — do not rename.
+_MAINTENANCE_PATH = "/api/voice/maintenance"
 
 # Identity + token-scoped tenant reads (Phase 1). The verification token minted by
 # verify-identity is threaded into every read body as `verificationToken` (fixed
@@ -74,9 +90,12 @@ _MAINTENANCE_STATUS_PATH = "/api/voice/tenant/maintenance-status"
 _LEASE_DETAILS_PATH = "/api/voice/tenant/lease"
 
 # The caller-type discriminator the shared verify-identity endpoint branches on. The
-# tenant path omits it (defaults to tenant on the Nest side); landlord and contractor
-# callers each get a dedicated verify tool that sends its own literal here. Fixed
-# contract shared with the Nest voice module's CallerType — do not rename.
+# tenant path omits it on the wire (defaults to tenant on the Nest side); landlord and
+# contractor callers each get a dedicated verify tool that sends its own literal here.
+# The same values are also stashed into CallState.caller_type so the log hook can
+# attribute the call and report_maintenance stays TENANT-scoped. Fixed contract shared
+# with the Nest voice module's CallerType — do not rename.
+_CALLER_TYPE_TENANT = "tenant"
 _CALLER_TYPE_LANDLORD = "landlord"
 _CALLER_TYPE_CONTRACTOR = "contractor"
 
@@ -100,6 +119,18 @@ def _service_configured() -> bool:
     """True only when BOTH the base URL and the machine-auth token are set. Either
     one missing => the tools degrade gracefully instead of firing broken requests."""
     return bool(config.VOICE_API_BASE_URL and config.VOICE_SERVICE_TOKEN)
+
+
+def _call_state(context: RunContext) -> CallState | None:
+    """Return the per-call CallState attached to the session as `userdata`, or None if
+    it is missing/unexpected. The verify tools stash the minted token + caller details
+    onto it; report_maintenance and the log hook read them back. Defensive — a missing
+    or wrongly-typed userdata never crashes a tool."""
+    try:
+        state = context.userdata
+    except Exception:  # userdata unset on the session, etc.
+        return None
+    return state if isinstance(state, CallState) else None
 
 
 async def _post(path: str, payload: dict) -> dict:
@@ -149,7 +180,7 @@ async def _post(path: str, payload: dict) -> dict:
 
 
 @function_tool
-async def verify_tenant(name: str, address: str) -> dict:
+async def verify_tenant(context: RunContext, name: str, address: str) -> dict:
     """Verify that a caller is the tenant of a CROSSUB-managed property before taking
     any account action for them. Call this once you have BOTH the caller's full name
     AND their property address. Never reveal the internal match outcome or reason to
@@ -166,12 +197,17 @@ async def verify_tenant(name: str, address: str) -> dict:
         tell the caller a team member will follow up.
     """
     result = await _post(_VERIFY_TENANT_PATH, {"name": name, "address": address})
+    state = _call_state(context)
+    if state is not None:
+        state.stash_verification(result, _CALLER_TYPE_TENANT)
     logger.info("verify_tenant(name=%r, address=%r) -> %s", name, address, result)
     return result
 
 
 @function_tool
-async def create_end_leasing(property_id: str, move_out_date: str, caller_name: str) -> dict:
+async def create_end_leasing(
+    context: RunContext, property_id: str, move_out_date: str, caller_name: str
+) -> dict:
     """Lodge an end-of-lease (move-out / vacate) record for a verified tenant. ONLY
     call this AFTER verify_tenant returned verified:true AND the caller has explicitly
     said "yes" to your read-back of their name, address, and move-out date. This does
@@ -195,6 +231,13 @@ async def create_end_leasing(property_id: str, move_out_date: str, caller_name: 
             "callerName": caller_name,
         },
     )
+    # Note the action so the end-of-call summary can flag the vacate notice. Never
+    # blocks the caller — pure best-effort bookkeeping.
+    if result.get("created"):
+        state = _call_state(context)
+        if state is not None:
+            task = result.get("taskNumber")
+            state.record_action(f"vacate notice {task}" if task else "vacate notice")
     logger.info(
         "create_end_leasing(property_id=%r, move_out_date=%r, caller_name=%r) -> %s",
         property_id,
@@ -229,7 +272,7 @@ async def _tenant_read(
 
 
 @function_tool
-async def verify_identity(name: str, address: str) -> dict:
+async def verify_identity(context: RunContext, name: str, address: str) -> dict:
     """Verify a caller's identity by full name + property address BEFORE answering any
     question about their OWN account — rent, upcoming inspection, maintenance, or
     lease. Call this once you have BOTH the caller's full name AND their property
@@ -252,6 +295,9 @@ async def verify_identity(name: str, address: str) -> dict:
         NEVER reveal to the caller whether or why verification failed.
     """
     result = await _post(_VERIFY_IDENTITY_PATH, {"name": name, "address": address})
+    state = _call_state(context)
+    if state is not None:
+        state.stash_verification(result, _CALLER_TYPE_TENANT)
     logger.info(
         "verify_identity(name=%r, address=%r) -> %s", name, address, _redact_token(result)
     )
@@ -367,7 +413,9 @@ async def get_lease_details(verification_token: str) -> dict:
 
 
 @function_tool
-async def verify_landlord_identity(name: str, address: str) -> dict:
+async def verify_landlord_identity(
+    context: RunContext, name: str, address: str
+) -> dict:
     """Verify a caller who says they are the LANDLORD / OWNER of a CROSSUB-managed
     property, BEFORE answering any question about that owner's OWN property, tenancy,
     maintenance, inspection, or income. Call this once you have BOTH the caller's full
@@ -394,6 +442,9 @@ async def verify_landlord_identity(name: str, address: str) -> dict:
         _VERIFY_IDENTITY_PATH,
         {"name": name, "address": address, "callerType": _CALLER_TYPE_LANDLORD},
     )
+    state = _call_state(context)
+    if state is not None:
+        state.stash_verification(result, _CALLER_TYPE_LANDLORD)
     logger.info(
         "verify_landlord_identity(name=%r, address=%r) -> %s",
         name,
@@ -404,7 +455,9 @@ async def verify_landlord_identity(name: str, address: str) -> dict:
 
 
 @function_tool
-async def verify_contractor_identity(name: str, reference: str) -> dict:
+async def verify_contractor_identity(
+    context: RunContext, name: str, reference: str
+) -> dict:
     """Verify a caller who says they are the CONTRACTOR / TRADIE assigned to CROSSUB
     work, BEFORE answering any question about their jobs. Call this once you have BOTH
     the caller's full name AND a work-order / reference number for one of their jobs. On
@@ -431,6 +484,9 @@ async def verify_contractor_identity(name: str, reference: str) -> dict:
         _VERIFY_IDENTITY_PATH,
         {"name": name, "reference": reference, "callerType": _CALLER_TYPE_CONTRACTOR},
     )
+    state = _call_state(context)
+    if state is not None:
+        state.stash_verification(result, _CALLER_TYPE_CONTRACTOR)
     logger.info(
         "verify_contractor_identity(name=%r, reference=%r) -> %s",
         name,
@@ -605,6 +661,67 @@ async def get_contractor_job_status(verification_token: str, reference: str) -> 
     return result
 
 
+@function_tool
+async def report_maintenance(
+    context: RunContext, description: str, urgent: bool = False
+) -> dict:
+    """Lodge a maintenance / repair request for the VERIFIED TENANT on this call — for
+    something broken or faulty at their property (e.g. a leaking tap, broken heater, no
+    hot water, a blocked drain). ONLY call this AFTER verify_identity returned
+    verified:true for a TENANT, and only once you have confirmed WHAT is broken and
+    whether it is urgent. You do NOT pass any token or property id — the verified
+    caller's token, property, call id, and name are supplied for you from the call.
+
+    Args:
+        description: A clear, self-contained description of the problem in the caller's
+            own words (what is broken and where), e.g. "hot water system not working in
+            the kitchen". Do not include the caller's name or any reference number.
+        urgent: True ONLY for a genuine safety, security, gas, electrical, or flooding
+            issue; otherwise False.
+
+    Returns:
+        A dict. When the backend is reachable: {"created": bool, "orderNumber"?: str,
+        "reason"?: 'no_property'|'wrong_caller_type'|'invalid_token'}. Read back the
+        orderNumber to the caller ONLY when created:true. When it is unreachable, not
+        configured, or the caller has not been verified this call: {"ok": false, ...} —
+        treat that as "couldn't log it right now" and say a team member will follow up.
+        NEVER tell the caller a request was created unless this returned created:true,
+        and never invent or guess a reference number.
+    """
+    state = _call_state(context)
+    if state is None or not state.verification_token:
+        # No verified token stashed this call — never POST a maintenance request
+        # without one. Signal the LLM to verify the tenant first.
+        logger.info(
+            "report_maintenance called before a verified token was stashed; declining"
+        )
+        return {"ok": False, "created": False, "reason": "not_verified"}
+
+    payload: dict = {
+        "callId": state.call_id,
+        "verificationToken": state.verification_token,
+        "description": description,
+        "urgent": bool(urgent),
+    }
+    if state.caller_name:
+        payload["callerName"] = state.caller_name
+    if state.caller_phone:
+        payload["callerPhone"] = state.caller_phone
+
+    result = await _post(_MAINTENANCE_PATH, payload)
+    order_number = result.get("orderNumber")
+    if result.get("created") and order_number:
+        state.record_action(f"maintenance {order_number}")
+    # Log the outcome only — the payload (with the token) is never logged.
+    logger.info(
+        "report_maintenance(description=%r, urgent=%s) -> %s",
+        description,
+        urgent,
+        result,
+    )
+    return result
+
+
 # Registered on the Agent (see agent.CrossubAssistant). Exposed as one list so the
 # agent wires up "all voice action tools" without knowing their individual names.
 ALL_TOOLS = [
@@ -625,4 +742,5 @@ ALL_TOOLS = [
     get_landlord_income,
     get_contractor_jobs,
     get_contractor_job_status,
+    report_maintenance,
 ]

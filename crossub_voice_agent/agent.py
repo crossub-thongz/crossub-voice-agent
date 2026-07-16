@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
     AgentSession,
+    ConversationItemAddedEvent,
     JobContext,
     MetricsCollectedEvent,
     RoomInputOptions,
@@ -30,9 +32,15 @@ from livekit.plugins import anthropic, deepgram, elevenlabs, silero
 from livekit.plugins.elevenlabs.tts import DEFAULT_VOICE_ID
 from livekit.plugins.turn_detector.multilingual import MultilingualModel
 
+from . import call_log
 from . import config
 from . import prompts
 from . import tools
+from .call_state import (
+    TRANSCRIPT_AGENT_LABEL,
+    TRANSCRIPT_CALLER_LABEL,
+    CallState,
+)
 
 load_dotenv()
 
@@ -71,12 +79,13 @@ def apply_tts_language(tts: elevenlabs.TTS, lang: str) -> None:
 
 
 class CrossubAssistant(Agent):
-    """The CROSSUB persona, with the move-out action tools (verify_tenant,
-    create_end_leasing) that POST to the Nest voice API."""
+    """The CROSSUB persona, with the voice action tools (verify + token-scoped reads,
+    move-out via create_end_leasing, and repair lodging via report_maintenance) that
+    POST to the Nest voice API."""
 
     def __init__(self, tts: elevenlabs.TTS) -> None:
-        # Register the Claude function-calling tools (verify_tenant,
-        # create_end_leasing) so the LLM can take real CROSSUB actions mid-call.
+        # Register the Claude function-calling tools (verify/read, create_end_leasing,
+        # report_maintenance) so the LLM can take real CROSSUB actions mid-call.
         super().__init__(instructions=prompts.SYSTEM_PROMPT, tools=tools.ALL_TOOLS)
         self._tts_ref = tts
         self._spoken_language: str | None = None
@@ -100,6 +109,27 @@ def _build_tts() -> elevenlabs.TTS:
     return elevenlabs.TTS(**kwargs)
 
 
+# SIP participant attributes LiveKit sets for an inbound phone call. Best-effort — a
+# browser (web tester) or console session has no phone number, and that's fine.
+_SIP_PHONE_ATTRS = ("sip.phoneNumber", "sip.from")
+
+
+def _extract_caller_phone(room) -> str | None:
+    """Best-effort caller phone number from the inbound SIP participant's attributes.
+    Returns None for non-SIP sessions (browser tester / console) or if unavailable —
+    the phone number is optional everywhere it's used."""
+    try:
+        for participant in room.remote_participants.values():
+            attrs = getattr(participant, "attributes", None) or {}
+            for key in _SIP_PHONE_ATTRS:
+                phone = attrs.get(key)
+                if phone:
+                    return phone
+    except Exception:
+        return None
+    return None
+
+
 def _room_input_options() -> RoomInputOptions:
     """Room input, optionally with LiveKit Cloud telephony noise cancellation."""
     if config.USE_TELEPHONY_NOISE_CANCELLATION:
@@ -118,6 +148,16 @@ def _room_input_options() -> RoomInputOptions:
 async def entrypoint(ctx: JobContext) -> None:
     await ctx.connect()
 
+    call_started_at = time.monotonic()
+
+    # Per-call state, attached to the session as `userdata`. The verify tools stash the
+    # minted token + caller name/type here; report_maintenance and the end-of-call log
+    # hook read it. call_id is the LiveKit room name (stable for the whole call).
+    call_state = CallState(
+        call_id=ctx.room.name or f"session-{id(ctx.room):x}",
+        caller_phone=_extract_caller_phone(ctx.room),
+    )
+
     tts = _build_tts()
     session: AgentSession = AgentSession(
         stt=deepgram.STT(model=config.STT_MODEL, language=config.STT_LANGUAGE),
@@ -125,6 +165,7 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=tts,
         vad=silero.VAD.load(),
         turn_detection=MultilingualModel(),
+        userdata=call_state,
     )
 
     # Collect latency + token metrics — the Phase 0 go/no-go signal (latency & cost).
@@ -135,10 +176,37 @@ async def entrypoint(ctx: JobContext) -> None:
         metrics.log_metrics(ev.metrics)
         usage.collect(ev.metrics)
 
+    # Fallback transcript accumulator: append each spoken user/agent turn to CallState.
+    # The end-of-call hook prefers session.history but falls back to this. Also tracks
+    # the call's language for the Comm Hub record.
+    @session.on("conversation_item_added")
+    def _on_conversation_item(ev: ConversationItemAddedEvent) -> None:
+        item = ev.item
+        if getattr(item, "type", None) != "message":
+            return
+        role = getattr(item, "role", None)
+        text = (getattr(item, "text_content", None) or "").strip()
+        if not text:
+            return
+        if role == "user":
+            call_state.append_turn(TRANSCRIPT_CALLER_LABEL, text)
+            lang = detect_language(text)
+            if lang:
+                call_state.language = lang
+        elif role == "assistant":
+            call_state.append_turn(TRANSCRIPT_AGENT_LABEL, text)
+
     async def _log_usage_summary() -> None:
         logger.info("Call usage summary: %s", usage.get_summary())
 
+    # Automatic end-of-call Comm Hub landing (best-effort; never crashes shutdown).
+    async def _land_call_in_comm_hub() -> None:
+        await call_log.log_call(
+            session, call_state, duration_seconds=time.monotonic() - call_started_at
+        )
+
     ctx.add_shutdown_callback(_log_usage_summary)
+    ctx.add_shutdown_callback(_land_call_in_comm_hub)
 
     await session.start(
         room=ctx.room,
