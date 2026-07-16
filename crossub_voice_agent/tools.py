@@ -35,14 +35,19 @@ Each verify tool mints its own callerType-scoped token; the read tools thread it
 into their body as `verificationToken` exactly as the tenant reads do, and it is NEVER
 spoken to the caller.
 
-Phase 2 adds one WRITE action plus per-call state:
-  - report_maintenance(description, urgent=False)  -> POST /api/voice/maintenance
-A verified TENANT can report a repair mid-call; report_maintenance lodges a real
-MaintenanceRequest. It takes no token/property/id from the LLM — instead every verify
-tool stashes its minted `verificationToken`, the matched caller name, and the caller
-type onto a per-call `CallState` (attached to the session as `userdata`), and
-report_maintenance reads that stash to POST the token + call id + caller name. The same
-CallState feeds the automatic end-of-call Comm Hub log hook (see agent.py / call_log.py).
+Phase 2/3 add WRITE actions plus per-call state:
+  - report_maintenance(description, urgent=False, address?)
+                                                  -> POST /api/voice/maintenance
+  - log_job_update(reference, note, urgent=False) -> POST /api/voice/contractor/job-update
+A verified TENANT **or property OWNER** can lodge a repair mid-call via
+report_maintenance (the SERVER routes tenant-vs-owner from the token; an owner names the
+property via the optional `address`), and a verified CONTRACTOR can log a note/update on
+one of their own jobs via log_job_update. Both take no token/property/id from the LLM —
+instead every verify tool stashes its minted `verificationToken`, the matched caller
+name, the caller type, and the verified property address onto a per-call `CallState`
+(attached to the session as `userdata`), and the write tools read that stash to POST the
+token + call id + caller name. The same CallState feeds the automatic end-of-call Comm
+Hub log hook (see agent.py / call_log.py).
 
 Every call is authenticated to the Nest side with the `x-voice-service-token`
 header (shared machine secret, see config.VOICE_SERVICE_TOKEN).
@@ -73,10 +78,11 @@ _HTTP_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 _VERIFY_TENANT_PATH = "/api/voice/verify-tenant"
 _END_LEASING_PATH = "/api/voice/end-leasing"
 
-# Maintenance-request lodging (Phase 2). A verified TENANT reports a repair mid-call;
-# report_maintenance POSTs the STORED verification token + call id here so the Nest
-# side derives the property from the token (never a body id). Fixed contract shared
-# with the Nest voice module — do not rename.
+# Maintenance-request lodging (Phase 2/3). A verified TENANT or property OWNER reports a
+# repair mid-call; report_maintenance POSTs the STORED verification token + call id (and,
+# for a multi-property owner, an `address`) here so the Nest side derives the property
+# from the token + address (never a body id) and routes tenant-vs-owner by the token's
+# callerType. Fixed contract shared with the Nest voice module — do not rename.
 _MAINTENANCE_PATH = "/api/voice/maintenance"
 
 # Identity + token-scoped tenant reads (Phase 1). The verification token minted by
@@ -113,6 +119,12 @@ _LANDLORD_INCOME_PATH = "/api/voice/landlord/income"
 # jobs; job-status also carries the caller-supplied work-order/reference number.
 _CONTRACTOR_JOBS_PATH = "/api/voice/contractor/jobs"
 _CONTRACTOR_JOB_STATUS_PATH = "/api/voice/contractor/job-status"
+
+# Contractor job-update WRITE (Phase 3). A verified CONTRACTOR leaves a note/update on
+# ONE of their own jobs; log_job_update POSTs the STORED verification token + call id
+# here so the Nest side derives the job from the token + reference (never a body id).
+# Fixed contract shared with the Nest voice module — do not rename.
+_CONTRACTOR_JOB_UPDATE_PATH = "/api/voice/contractor/job-update"
 
 
 def _service_configured() -> bool:
@@ -663,14 +675,22 @@ async def get_contractor_job_status(verification_token: str, reference: str) -> 
 
 @function_tool
 async def report_maintenance(
-    context: RunContext, description: str, urgent: bool = False
+    context: RunContext,
+    description: str,
+    urgent: bool = False,
+    address: str | None = None,
 ) -> dict:
-    """Lodge a maintenance / repair request for the VERIFIED TENANT on this call — for
-    something broken or faulty at their property (e.g. a leaking tap, broken heater, no
-    hot water, a blocked drain). ONLY call this AFTER verify_identity returned
-    verified:true for a TENANT, and only once you have confirmed WHAT is broken and
-    whether it is urgent. You do NOT pass any token or property id — the verified
-    caller's token, property, call id, and name are supplied for you from the call.
+    """Lodge a maintenance / repair request for the VERIFIED TENANT **or property
+    OWNER** on this call — for something broken or faulty at the property (e.g. a
+    leaking tap, broken heater, no hot water, a blocked drain). ONLY call this AFTER a
+    verify tool returned verified:true, and only once you have confirmed WHAT is broken
+    and whether it is urgent. You do NOT pass any token or property id — the caller's
+    verified token, call id, and name are supplied for you from the call, and the SERVER
+    decides tenant-vs-owner handling from that token.
+
+    For an OWNER who owns multiple properties, pass `address` = the street address they
+    name for the repair, so the server can pick the right property. A single-property
+    owner (or a tenant) does not need `address`.
 
     Args:
         description: A clear, self-contained description of the problem in the caller's
@@ -678,10 +698,15 @@ async def report_maintenance(
             the kitchen". Do not include the caller's name or any reference number.
         urgent: True ONLY for a genuine safety, security, gas, electrical, or flooding
             issue; otherwise False.
+        address: OPTIONAL — the street address of the property the repair is for. Only
+            needed for an owner who owns more than one property; omit for a tenant or a
+            single-property owner.
 
     Returns:
         A dict. When the backend is reachable: {"created": bool, "orderNumber"?: str,
-        "reason"?: 'no_property'|'wrong_caller_type'|'invalid_token'}. Read back the
+        "reason"?: 'no_property'|'ambiguous_property'|'wrong_caller_type'|
+        'invalid_token'}. 'ambiguous_property' means an owner must name which property —
+        ask for the full street address and call again with `address`. Read back the
         orderNumber to the caller ONLY when created:true. When it is unreachable, not
         configured, or the caller has not been verified this call: {"ok": false, ...} —
         treat that as "couldn't log it right now" and say a team member will follow up.
@@ -691,7 +716,7 @@ async def report_maintenance(
     state = _call_state(context)
     if state is None or not state.verification_token:
         # No verified token stashed this call — never POST a maintenance request
-        # without one. Signal the LLM to verify the tenant first.
+        # without one. Signal the LLM to verify the caller first.
         logger.info(
             "report_maintenance called before a verified token was stashed; declining"
         )
@@ -707,6 +732,13 @@ async def report_maintenance(
         payload["callerName"] = state.caller_name
     if state.caller_phone:
         payload["callerPhone"] = state.caller_phone
+    # Property disambiguation for an owner: prefer an address the LLM supplied for the
+    # repair, else fall back to the verified property's address stashed at verify time
+    # (a single-property owner / the just-verified property). Tenants: harmless — the
+    # server ignores `address` for a tenant token, which routes to their one property.
+    resolved_address = address if (address and address.strip()) else state.caller_property_address
+    if resolved_address and resolved_address.strip():
+        payload["address"] = resolved_address
 
     result = await _post(_MAINTENANCE_PATH, payload)
     order_number = result.get("orderNumber")
@@ -714,8 +746,76 @@ async def report_maintenance(
         state.record_action(f"maintenance {order_number}")
     # Log the outcome only — the payload (with the token) is never logged.
     logger.info(
-        "report_maintenance(description=%r, urgent=%s) -> %s",
+        "report_maintenance(description=%r, urgent=%s, address=%r) -> %s",
         description,
+        urgent,
+        address,
+        result,
+    )
+    return result
+
+
+@function_tool
+async def log_job_update(
+    context: RunContext, reference: str, note: str, urgent: bool = False
+) -> dict:
+    """Log an update / note from the VERIFIED CONTRACTOR on ONE of their own jobs (e.g.
+    running late, completed, needs parts, an access issue). You do NOT pass any token —
+    the verified caller's token, call id, and name are supplied for you. `reference` is
+    the work-order / job number the contractor gives; `note` is a short clear
+    description of the update. Returns {logged, orderNumber?, reason?}. This records a
+    note for the office to review — it does NOT change the job's official status.
+
+    Args:
+        reference: The work-order / job reference number the contractor gave, to find
+            which of their jobs the note is for.
+        note: A short, clear description of the update in the contractor's own words
+            (e.g. "running about an hour late, will arrive by two", "job complete, will
+            send the invoice", "need a replacement part, back tomorrow").
+        urgent: True ONLY for a genuine safety, security, or access-blocking issue;
+            otherwise False.
+
+    Returns:
+        A dict. When the backend is reachable: {"logged": bool, "orderNumber"?: str,
+        "reason"?: 'no_job'|'wrong_caller_type'|'invalid_token'}. Confirm the note ONLY
+        when logged:true. When it is unreachable, not configured, or the caller has not
+        been verified as a contractor this call: {"ok": false, ...} — treat that as
+        "couldn't log it right now" and say a team member will follow up. NEVER tell the
+        contractor the job's official status changed, and never promise payment, a
+        schedule, or approval — only that the note was logged for the office.
+    """
+    state = _call_state(context)
+    if state is None or not state.verification_token:
+        # No verified token stashed this call — never POST an update without one.
+        logger.info(
+            "log_job_update called before a verified token was stashed; declining"
+        )
+        return {"ok": False, "logged": False, "reason": "not_verified"}
+    # Defence in depth: only a verified CONTRACTOR may log a job update. The server
+    # enforces this from the token too, but refusing here avoids a pointless POST.
+    if state.caller_type != _CALLER_TYPE_CONTRACTOR:
+        logger.info(
+            "log_job_update called for caller_type=%r (not contractor); declining",
+            state.caller_type,
+        )
+        return {"ok": False, "logged": False, "reason": "wrong_caller_type"}
+
+    payload: dict = {
+        "callId": state.call_id,
+        "verificationToken": state.verification_token,
+        "reference": reference,
+        "note": note,
+        "urgent": bool(urgent),
+    }
+
+    result = await _post(_CONTRACTOR_JOB_UPDATE_PATH, payload)
+    order_number = result.get("orderNumber")
+    if result.get("logged") and order_number:
+        state.record_action(f"job update {order_number}")
+    # Log the outcome only — the payload (with the token) is never logged.
+    logger.info(
+        "log_job_update(reference=%r, urgent=%s) -> %s",
+        reference,
         urgent,
         result,
     )
@@ -743,4 +843,5 @@ ALL_TOOLS = [
     get_contractor_jobs,
     get_contractor_job_status,
     report_maintenance,
+    log_job_update,
 ]

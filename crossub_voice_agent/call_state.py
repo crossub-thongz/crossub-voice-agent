@@ -39,6 +39,11 @@ class CallState:
     caller_name: str | None = None
     caller_type: str | None = None
     verification_token: str | None = None
+    # The verified caller's own property address (from verify-identity's
+    # `propertyAddress`). Harmless for a tenant; used as the DEFAULT lodge property
+    # for a landlord who owns a single property so report_maintenance need not
+    # re-supply an address.
+    caller_property_address: str | None = None
     language: str | None = None
     # Append-only fallback transcript accumulator ("Caller:"/"Agent:" lines). The
     # shutdown hook prefers the framework's session.history and only falls back here.
@@ -63,6 +68,11 @@ class CallState:
         name = result.get("matchedName") or result.get("matchedTenantName")
         if isinstance(name, str) and name:
             self.caller_name = name
+        # The verified property's address, used as the landlord lodge's default
+        # property (harmless for a tenant, whose verify result may omit it).
+        address = result.get("propertyAddress")
+        if isinstance(address, str) and address:
+            self.caller_property_address = address
 
     def record_action(self, action: str) -> None:
         """Note a lodging action for the summary hint + the log-call outcome."""
