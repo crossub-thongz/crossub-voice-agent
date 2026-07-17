@@ -27,6 +27,16 @@ def _flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in _TRUTHY
 
 
+def _seconds(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 # --- Speech-to-text (Deepgram) ---
 STT_MODEL = os.getenv("VOICE_STT_MODEL", "nova-3")
 # "multi" = attempt EN/中文 code-switching in one stream. Per-call "en"/"zh"
@@ -74,6 +84,12 @@ AGENT_NAME = os.getenv("VOICE_AGENT_NAME", "crossub-inbound")
 # LiveKit Cloud enhanced noise cancellation tuned for phone audio.
 # Requires `uv sync --extra telephony` and a LiveKit Cloud project.
 USE_TELEPHONY_NOISE_CANCELLATION = _flag("VOICE_TELEPHONY_NOISE_CANCELLATION", False)
+
+# How long to wait for the caller to join the room before starting the session.
+# The room is still empty the instant connect() returns, so the caller's SIP
+# attributes (their phone number) only exist once they've actually joined. This is
+# best-effort: on timeout the call proceeds normally, just without a phone number.
+PARTICIPANT_WAIT_TIMEOUT_S = _seconds("VOICE_PARTICIPANT_WAIT_TIMEOUT_S", 10.0)
 
 # --- Health-check HTTP server binding (for PaaS that require an open port) ---
 # The LiveKit worker exposes a health endpoint. Platforms like Render/Railway run

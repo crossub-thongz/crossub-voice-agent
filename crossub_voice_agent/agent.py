@@ -11,6 +11,7 @@ Run modes (see README):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -109,24 +110,42 @@ def _build_tts() -> elevenlabs.TTS:
     return elevenlabs.TTS(**kwargs)
 
 
-# SIP participant attributes LiveKit sets for an inbound phone call. Best-effort — a
-# browser (web tester) or console session has no phone number, and that's fine.
-_SIP_PHONE_ATTRS = ("sip.phoneNumber", "sip.from")
+# The attribute LiveKit sets on an inbound SIP participant carrying the caller's
+# number (ANI). Treat it as a hint for who is calling, never as authentication —
+# caller ID is trivially spoofed, so the verify tools still ask for name + address.
+_SIP_PHONE_ATTR = "sip.phoneNumber"
 
 
-def _extract_caller_phone(room) -> str | None:
+def _extract_caller_phone(participant) -> str | None:
     """Best-effort caller phone number from the inbound SIP participant's attributes.
     Returns None for non-SIP sessions (browser tester / console) or if unavailable —
     the phone number is optional everywhere it's used."""
     try:
-        for participant in room.remote_participants.values():
-            attrs = getattr(participant, "attributes", None) or {}
-            for key in _SIP_PHONE_ATTRS:
-                phone = attrs.get(key)
-                if phone:
-                    return phone
+        attrs = getattr(participant, "attributes", None) or {}
+        return attrs.get(_SIP_PHONE_ATTR) or None
     except Exception:
         return None
+
+
+async def _wait_for_caller(ctx: JobContext):
+    """Wait for the caller to join so their attributes are readable.
+
+    Accepts any participant kind on purpose: a phone caller joins as SIP, but the
+    web tester joins as a standard participant and dispatches this agent *before*
+    the browser connects — waiting for SIP alone would hang the tester forever.
+    Returns None if nobody arrives in time; the call then proceeds without a phone
+    number rather than stalling the worker."""
+    try:
+        return await asyncio.wait_for(
+            ctx.wait_for_participant(), timeout=config.PARTICIPANT_WAIT_TIMEOUT_S
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "No participant joined within %ss; continuing without a caller phone number.",
+            config.PARTICIPANT_WAIT_TIMEOUT_S,
+        )
+    except Exception:
+        logger.exception("Waiting for the caller failed; continuing without a phone number.")
     return None
 
 
@@ -150,12 +169,16 @@ async def entrypoint(ctx: JobContext) -> None:
 
     call_started_at = time.monotonic()
 
+    # connect() returns before anyone is in the room, so the caller must be awaited
+    # before their attributes exist to read.
+    caller = await _wait_for_caller(ctx)
+
     # Per-call state, attached to the session as `userdata`. The verify tools stash the
     # minted token + caller name/type here; report_maintenance and the end-of-call log
     # hook read it. call_id is the LiveKit room name (stable for the whole call).
     call_state = CallState(
         call_id=ctx.room.name or f"session-{id(ctx.room):x}",
-        caller_phone=_extract_caller_phone(ctx.room),
+        caller_phone=_extract_caller_phone(caller) if caller else None,
     )
 
     tts = _build_tts()

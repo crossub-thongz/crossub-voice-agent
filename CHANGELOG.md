@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-17
+
+### Fixed
+- Caller phone number is now actually captured on inbound SIP calls. `entrypoint` read the room's participants immediately after `ctx.connect()`, when the room is still empty, so `_extract_caller_phone` always returned `None` and `callerPhone` was silently dropped from every `POST /api/voice/log-call` and `POST /api/voice/maintenance`. The agent now awaits the caller (`ctx.wait_for_participant()`, any participant kind — restricting to SIP would hang the browser tester, which dispatches the agent before the browser connects) and reads that participant's attributes. Bounded by the new `VOICE_PARTICIPANT_WAIT_TIMEOUT_S` (default 10s): on timeout or error the call proceeds without a phone number rather than stalling the worker.
+- Dropped the bogus `sip.from` attribute fallback — LiveKit sets no such attribute, so it was dead code. `sip.phoneNumber` (the caller's ANI) is the only real source.
+
+### Changed
+- `_extract_caller_phone` now takes the caller participant instead of the room.
+
 ## 2026-07-16
 
 ### Added
