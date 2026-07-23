@@ -248,3 +248,275 @@ body {
 .line.interim {
   opacity: 0.6;
 }
+
+/* ---- Nav between the two testers ---- */
+.nav {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.navlink {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+}
+a.navlink:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.navlink.active {
+  color: var(--text);
+  background: var(--panel);
+  border-color: var(--accent);
+}
+
+/* ---- Async-message triage tester ---- */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fieldLabel {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  appearance: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 7px 13px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.chip:hover {
+  border-color: var(--accent);
+}
+.segment {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: fit-content;
+}
+.seg {
+  appearance: none;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 9px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.seg.on {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: white;
+}
+.row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.col {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.input,
+.textarea {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 15px;
+  font-family: inherit;
+  padding: 11px 13px;
+  transition: border-color 0.12s ease;
+}
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--muted);
+  cursor: pointer;
+  padding-bottom: 11px;
+  white-space: nowrap;
+}
+.toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.cta.full {
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* ---- Result card ---- */
+.card {
+  margin-top: 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.badge {
+  font-size: 12.5px;
+  font-weight: 700;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.badge.dept.MAINTENANCE {
+  background: rgba(245, 158, 11, 0.16);
+  color: #f5b34b;
+}
+.badge.dept.LEASING {
+  background: rgba(91, 140, 255, 0.16);
+  color: var(--accent);
+}
+.badge.dept.INSPECTION {
+  background: rgba(124, 92, 255, 0.18);
+  color: #a892ff;
+}
+.badge.dept.ACCOUNTING {
+  background: rgba(53, 208, 127, 0.16);
+  color: var(--ok);
+}
+.badge.dept.TRIBUNAL {
+  background: rgba(255, 92, 114, 0.16);
+  color: var(--danger);
+}
+.badge.dept.GENERAL {
+  background: var(--bg-2);
+  color: var(--muted);
+}
+.badge.urg.LOW {
+  background: var(--bg-2);
+  color: var(--muted);
+}
+.badge.urg.MEDIUM {
+  background: rgba(91, 140, 255, 0.16);
+  color: var(--accent);
+}
+.badge.urg.HIGH {
+  background: rgba(245, 158, 11, 0.16);
+  color: #f5b34b;
+}
+.badge.urg.CRITICAL {
+  background: rgba(255, 92, 114, 0.2);
+  color: var(--danger);
+}
+.badge.conf.ok {
+  background: rgba(53, 208, 127, 0.14);
+  color: var(--ok);
+}
+.badge.conf.warn {
+  background: rgba(245, 158, 11, 0.14);
+  color: #f5b34b;
+}
+.summary {
+  font-size: 15px;
+  line-height: 1.55;
+  margin: 0;
+}
+.assignee {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+.action {
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.action.spawn {
+  background: rgba(53, 208, 127, 0.1);
+  border: 1px solid rgba(53, 208, 127, 0.35);
+}
+.action.route {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.tag {
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.issues {
+  width: 100%;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.issues li {
+  font-size: 14px;
+}
+.urgentTag {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--danger);
+  text-transform: uppercase;
+}
+.meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0;
+}

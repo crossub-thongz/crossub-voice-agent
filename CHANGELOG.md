@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-23
+
+### Added
+- Async-messaging (text) triage tester in the browser tester app (`web/`): a new **Text / messaging** tab (`web/app/messaging/page.tsx`) where you pick a sender role (tenant/owner/contractor), type a message (or click an EN/中文 example), toggle "property on file", and see the AI triage result — department, urgency, one-line summary, confidence, and whether a maintenance order WOULD be created — rendered as a result card. Calls the CROSSUB API's `POST /api/voice/triage-preview` through a server-side proxy route (`web/app/api/triage-preview/route.ts`) so the `x-voice-service-token` never reaches the browser. Nav links added between the Voice and Text testers. It runs in dry-run preview mode — nothing is ever written.
+- New tester env vars `VOICE_API_BASE_URL` + `VOICE_SERVICE_TOKEN` (documented in `web/.env.local.example`) pointing the tester at the CROSSUB API + its shared voice service token.
+- `docs/async-messaging-triage.md` — bilingual (EN + 中文) boss-facing guide to using and testing the async-messaging AI triage, plus a technical reference (endpoint contract, env vars, local run, staging deploy, safety notes).
+
 ## 2026-07-17
 
 ### Fixed

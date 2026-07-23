@@ -58,6 +58,12 @@ export default function Page() {
           CROSSUB<span className="brandLight"> Voice Agent</span>
         </div>
         <div className="sub">Phase 0 tester · English + 中文</div>
+        <nav className="nav">
+          <span className="navlink active">Voice tester</span>
+          <a className="navlink" href="/messaging">
+            Text / messaging →
+          </a>
+        </nav>
       </header>
 
       {!conn ? (
