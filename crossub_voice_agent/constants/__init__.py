@@ -10,6 +10,7 @@ can depend on it without creating a cycle.
 
 from __future__ import annotations
 
+from .language import DEFAULT_LANGUAGE, Language
 from .voice_mode import DEFAULT_VOICE_MODE, VoiceMode
 
-__all__ = ["DEFAULT_VOICE_MODE", "VoiceMode"]
+__all__ = ["DEFAULT_LANGUAGE", "DEFAULT_VOICE_MODE", "Language", "VoiceMode"]

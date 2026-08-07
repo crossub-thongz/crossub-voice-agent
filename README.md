@@ -121,11 +121,25 @@ Chinese voice in `.env`:
 VOICE_TTS_VOICE_ID_ZH=<a Chinese voice id>
 ```
 
-Get one from the **ElevenLabs Voice Library** (elevenlabs.io/app/voice-library → filter
-*Language = Chinese* → pick a conversational voice → *Add to my voices* → copy its Voice ID).
-Left blank, Chinese is still spoken by the English voice but with the enforced `zh` language
-code — better than before, but a dedicated voice is the real fix. For maximum 中文 quality at
-some latency cost, A/B `VOICE_TTS_MODEL=eleven_multilingual_v2`.
+> ⚠️ **A dedicated Chinese voice needs a paid ElevenLabs plan.** On a free-tier key every
+> Voice Library voice is refused (`402 paid_plan_required`), so the only usable voices are the
+> premade ones — all English-native speakers, which is precisely what makes the Mandarin sound
+> accented. Two good Beijing-Mandarin candidates are noted in `.env.example` for when the plan
+> allows them (`007rapvffUWW4JvRagws` — Bo, calm and conversational — suits a phone line best).
+
+Until then the **model** does the heavy lifting, and it switches per turn along with the voice:
+English uses `eleven_flash_v2_5`, 中文 uses `eleven_multilingual_v2`. Measured time to first
+audio byte (Aug 2026, 3 runs each):
+
+| | English | 中文 |
+|---|---|---|
+| `eleven_flash_v2_5` | 312 ms | 317 ms |
+| `eleven_multilingual_v2` | 1233 ms | 1313 ms |
+
+multilingual_v2 handles Mandarin noticeably better but costs about a second, so it is used
+**only on Chinese turns**. Setting it globally would add ~900 ms to every English turn — most
+callers — and push a normal reply past the latency target below. Override per language with
+`VOICE_TTS_MODEL` / `VOICE_TTS_MODEL_ZH`.
 
 ## 5. Test over a real phone number — SIP
 

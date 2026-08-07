@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-08-08 (later)
+
+### Changed
+- **The TTS model is now switched per turn, like the voice already was.** English stays on `eleven_flash_v2_5`; 中文 turns use `eleven_multilingual_v2`, which speaks Mandarin noticeably better. Driven by measurement, not the estimate in the old comment — time to first audio byte, 3 runs each: flash 312ms (en) / 317ms (zh), multilingual_v2 1233ms (en) / 1313ms (zh). That is ~1s slower, not the "~300ms" previously documented. Setting multilingual_v2 globally to fix Chinese would therefore have added ~900ms to every **English** turn — most callers — pushing a normal reply well past the <800ms conversational target in the README. Scoping it to Chinese turns buys the Mandarin quality without spending English latency.
+- `config.TTS_LANGUAGE_ENFORCED` (a module-level flag computed from one model) is replaced by `config.language_enforced(model)`. With two models live in a single call, enforcement has to be decided per model: flash accepts `language_code`, multilingual_v2 rejects it.
+- New `VOICE_TTS_MODEL_ZH` (default `eleven_multilingual_v2`). No Render change needed — the default is the intended behaviour.
+
+### Added
+- `constants/language.py` with the `Language` enum, replacing bare `"en"`/`"zh"` literals in `detect_language` / `apply_tts_language`. A `StrEnum`, so it still compares equal to the plain strings the ElevenLabs and Nest log-call contracts expect — no conversion at the boundaries.
+
+### Known limitation
+- **Native-sounding Mandarin needs a paid ElevenLabs plan.** The account is on the free tier, and free keys are refused every Voice Library voice (`402 paid_plan_required`; the Creator-tier ones return 400). The only voices a free key can use are the premade set, all English-native speakers — which is the actual cause of the accent. `VOICE_TTS_MODEL_ZH` softens it; it does not remove it. Two Beijing-Mandarin candidates are recorded in `.env.example` for when the plan allows them, `007rapvffUWW4JvRagws` (Bo, conversational) being the best fit for a phone line.
+- The provisioned ElevenLabs key is scoped to text-to-speech only — no `voices_read`/`user_read` — so voice discovery has to happen in the dashboard rather than from this repo.
+
 ## 2026-08-08
 
 ### Added

@@ -83,7 +83,18 @@ The agent must never claim to have logged, lodged, or created anything in divert
 
 ## Two mechanisms worth knowing before editing
 
-**Per-language TTS switching.** `detect_language()` classifies each caller turn by CJK-vs-Latin regex; `Agent.on_user_turn_completed` then calls `apply_tts_language()` to `update_options(voice_id=..., language=...)` before the reply is generated. Voice ids resolve to *explicit* ids (`EN_VOICE_ID` / `ZH_VOICE_ID`, never `None`) so switching works in both directions — leaving one as `None` would strand the Chinese voice on later English turns. `language=` is only sent for models in `config._LANGUAGE_ENFORCING_MODELS` (flash/turbo v2.5, v3); `eleven_multilingual_v2` rejects it, so `TTS_LANGUAGE_ENFORCED` gates it.
+**Per-language TTS switching (voice *and* model).** `detect_language()` classifies each caller turn by CJK-vs-Latin regex into a `Language`; `Agent.on_user_turn_completed` then calls `apply_tts_language()` to `update_options(model=..., voice_id=..., language=...)` before the reply is generated. Voice ids resolve to *explicit* ids (`EN_VOICE_ID` / `ZH_VOICE_ID`, never `None`) so switching works in both directions — leaving one as `None` would strand the Chinese voice on later English turns. `language=` is only sent for models in `config._LANGUAGE_ENFORCING_MODELS` (flash/turbo v2.5, v3); `eleven_multilingual_v2` rejects it, which is why enforcement is the per-model `config.language_enforced(model)` rather than one module-level flag.
+
+The **model** switches too, and the reason is latency, measured Aug 2026 (time to first audio byte, 3 runs):
+
+| | English | 中文 |
+|---|---|---|
+| `eleven_flash_v2_5` | 312 ms | 317 ms |
+| `eleven_multilingual_v2` | 1233 ms | 1313 ms |
+
+multilingual_v2 speaks Mandarin much better but costs ~1s, so it is scoped to Chinese turns only. **Do not "simplify" this by setting one model globally** — multilingual_v2 everywhere adds ~900 ms to every English turn (most callers) and blows the <800 ms conversational target; flash everywhere brings the accent back.
+
+**The accent has a non-code cause.** Native-sounding Mandarin needs a paid ElevenLabs plan: free-tier keys are refused every Voice Library voice (`402 paid_plan_required`), leaving only premade voices — all English-native speakers. `VOICE_TTS_MODEL_ZH` softens it, `VOICE_TTS_VOICE_ID_ZH` fixes it but only once the plan allows. The provisioned key is TTS-scoped (no `voices_read`), so voices must be found in the ElevenLabs dashboard, not from here.
 
 **`CallState` as the token stash.** The LLM never receives or passes a call id, property id, or (for write tools) a verification token. Instead each `verify_*` tool stashes the minted `verificationToken` + matched name + caller type + verified property address onto `CallState`, and the write tools (`report_maintenance`, `log_job_update`) read it back via the injected `RunContext`. `stash_verification()` no-ops unless the backend returned `verified: true`, so a failed or unreachable verify can never clobber a good earlier one. Write tools return `{"ok": false, "reason": "not_verified"}` rather than POSTing without a token.
 

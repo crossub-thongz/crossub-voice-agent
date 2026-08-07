@@ -45,7 +45,7 @@ from .call_state import (
     TRANSCRIPT_CALLER_LABEL,
     CallState,
 )
-from .constants import VoiceMode
+from .constants import Language, VoiceMode
 
 load_dotenv()
 
@@ -63,24 +63,32 @@ _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
 
 
-def detect_language(text: str) -> str | None:
+def detect_language(text: str) -> Language | None:
     if _CJK_RE.search(text):
-        return "zh"
+        return Language.ZH
     if _LATIN_RE.search(text):
-        return "en"
+        return Language.EN
     return None
 
 
-def apply_tts_language(tts: elevenlabs.TTS, lang: str) -> None:
-    """Point the ElevenLabs TTS at the right voice (and, on flash/turbo v2.5, the
-    right language_code) for `lang` ('en' or 'zh'). Switching per turn keeps the
-    good English voice for English and a dedicated voice for 中文, instead of one
-    English-native voice reading Mandarin with an accent."""
-    voice_id = ZH_VOICE_ID if lang == "zh" else EN_VOICE_ID
-    if config.TTS_LANGUAGE_ENFORCED:
-        tts.update_options(voice_id=voice_id, language=lang)
+def apply_tts_language(tts: elevenlabs.TTS, lang: Language) -> None:
+    """Point the ElevenLabs TTS at the right voice AND model for `lang`, plus the
+    language_code on models that accept one.
+
+    Both are switched per turn because the languages want different trade-offs:
+    English stays on flash (~310ms to first byte) while 中文 uses multilingual_v2,
+    which speaks Mandarin better but measured ~1310ms. Applying multilingual_v2
+    globally to fix Chinese would slow every English turn by ~900ms — and most
+    callers are English speakers — so the cost is scoped to the turns that need it.
+    """
+    if lang is Language.ZH:
+        model, voice_id = config.TTS_MODEL_ZH, ZH_VOICE_ID
     else:
-        tts.update_options(voice_id=voice_id)
+        model, voice_id = config.TTS_MODEL, EN_VOICE_ID
+    if config.language_enforced(model):
+        tts.update_options(model=model, voice_id=voice_id, language=lang.value)
+    else:
+        tts.update_options(model=model, voice_id=voice_id)
 
 
 class CrossubAssistant(Agent):
@@ -292,15 +300,17 @@ async def entrypoint(ctx: JobContext) -> None:
         room_input_options=_room_input_options(),
     )
 
-    # Fixed-wording compliance disclosure (uninterruptible). Speak each half in its
-    # own-language voice so the 中文 isn't read by the English voice with an accent.
-    apply_tts_language(tts, "en")
+    # Fixed-wording compliance disclosure (uninterruptible). Speak each half with its
+    # own language's voice AND model, so the 中文 isn't read by the English voice with
+    # an accent. The 中文 half is the one turn where the slower multilingual model is
+    # unambiguously worth it — nobody is waiting on a reply during the greeting.
+    apply_tts_language(tts, Language.EN)
     await session.say(profile.disclosure_en, allow_interruptions=False)
-    apply_tts_language(tts, "zh")
+    apply_tts_language(tts, Language.ZH)
     await session.say(profile.disclosure_zh, allow_interruptions=False)
     # Back to the English voice for the greeting; the caller's first turn then sets
     # the language for the rest of the call (see on_user_turn_completed).
-    apply_tts_language(tts, "en")
+    apply_tts_language(tts, Language.EN)
     await session.generate_reply(instructions=profile.greeting_instructions)
 
 

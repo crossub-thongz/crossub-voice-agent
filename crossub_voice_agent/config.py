@@ -80,7 +80,17 @@ STT_LANGUAGE = os.getenv("VOICE_STT_LANGUAGE", "multi")
 LLM_MODEL = os.getenv("VOICE_LLM_MODEL", "claude-haiku-4-5")
 
 # --- Text-to-speech (ElevenLabs) ---
+# The model is switched PER TURN alongside the voice (see agent.apply_tts_language),
+# because the two languages want opposite trade-offs on a free-tier account:
+#   English — flash_v2_5, ~310ms to first byte, and it accepts an enforced language code.
+#   中文    — multilingual_v2 handles Mandarin noticeably better, but measured ~1310ms
+#             to first byte (Aug 2026, 3 runs). Paying that on every ENGLISH turn too
+#             would push a normal reply past this repo's <800ms conversational target,
+#             so it is scoped to the turns that actually need it.
+# The real fix for accented Mandarin is a native Chinese voice, which needs a paid
+# ElevenLabs plan — free-tier keys are refused library voices with 402/paid_plan_required.
 TTS_MODEL = os.getenv("VOICE_TTS_MODEL", "eleven_flash_v2_5")
+TTS_MODEL_ZH = os.getenv("VOICE_TTS_MODEL_ZH", "eleven_multilingual_v2")
 # English / default voice id (None => the ElevenLabs plugin default voice).
 TTS_VOICE_ID = os.getenv("VOICE_TTS_VOICE_ID") or None
 # Dedicated Chinese (中文) voice id. When the caller speaks Chinese the agent
@@ -93,7 +103,14 @@ TTS_VOICE_ID_ZH = os.getenv("VOICE_TTS_VOICE_ID_ZH") or None
 _LANGUAGE_ENFORCING_MODELS = frozenset(
     {"eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3"}
 )
-TTS_LANGUAGE_ENFORCED = TTS_MODEL in _LANGUAGE_ENFORCING_MODELS
+
+
+def language_enforced(model: str) -> bool:
+    """Whether `language_code` may be sent for this TTS model. Per model, not a
+    module-level flag: with per-language models in play, English can be on
+    flash (enforced) while 中文 is on multilingual_v2 (which rejects it) in the
+    very same call."""
+    return model in _LANGUAGE_ENFORCING_MODELS
 # The ElevenLabs plugin defaults to reading ELEVEN_API_KEY; we standardize on the
 # clearer ELEVENLABS_API_KEY and pass it explicitly (accepting either name).
 TTS_API_KEY = os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY") or None
