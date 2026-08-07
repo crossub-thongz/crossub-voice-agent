@@ -27,6 +27,12 @@ TRANSCRIPT_AGENT_LABEL = "Agent"
 # Outcome recorded on the log-call POST when the caller took no lodging action.
 OUTCOME_GENERAL_ENQUIRY = "general_enquiry"
 
+# Outcome for a divert-mode call: the agent took no action by design and pointed
+# the caller at the email channel. Distinct from a general enquiry so the Comm Hub
+# can tell "the agent had tools and used none" apart from "the agent was never
+# able to act", which is what makes divert-mode volume measurable.
+OUTCOME_DIVERTED_TO_EMAIL = "diverted_to_email"
+
 
 @dataclass
 class CallState:
@@ -51,6 +57,10 @@ class CallState:
     # Human-readable actions taken this call (e.g. "maintenance MR-00123",
     # "vacate notice") — feeds the summary hint + the log-call `outcome` field.
     actions: list[str] = field(default_factory=list)
+    # What `outcome` reports when nothing was actioned. Set from the answer mode
+    # (agent.build_agent_profile) so a divert-mode call, where taking no action is
+    # the intended result, isn't logged as if the agent merely failed to act.
+    default_outcome: str = OUTCOME_GENERAL_ENQUIRY
 
     def stash_verification(self, result: dict, caller_type: str) -> None:
         """After a verify tool call, remember the minted token + the matched caller
@@ -87,6 +97,6 @@ class CallState:
 
     @property
     def outcome(self) -> str:
-        """A short outcome string for the log-call POST (e.g. the actions taken, or a
-        general-enquiry marker when nothing was lodged)."""
-        return "; ".join(self.actions) if self.actions else OUTCOME_GENERAL_ENQUIRY
+        """A short outcome string for the log-call POST: the actions taken, or the
+        mode's default marker when nothing was lodged."""
+        return "; ".join(self.actions) if self.actions else self.default_outcome

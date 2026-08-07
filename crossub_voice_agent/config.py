@@ -11,6 +11,8 @@ import os
 
 from dotenv import load_dotenv
 
+from .constants import DEFAULT_VOICE_MODE, VoiceMode
+
 # This module is imported before agent.py's own load_dotenv() runs, so we must
 # load the .env here — otherwise every os.getenv() below reads an empty
 # environment and silently falls back to defaults (and optional keys become None).
@@ -35,6 +37,37 @@ def _seconds(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _voice_mode() -> VoiceMode:
+    """Parse VOICE_MODE, falling back to the safe default for anything
+    unrecognised — a typo must never silently arm the full self-service agent."""
+    raw = (os.getenv("VOICE_MODE") or "").strip().lower()
+    for mode in VoiceMode:
+        if raw == mode.value:
+            return mode
+    return DEFAULT_VOICE_MODE
+
+
+# --- Answer behaviour ---
+# `divert` (default) = hear the enquiry, point the caller at the email channel,
+# take no action and expose NO tools. `full` = the earlier self-service assistant.
+# See constants/voice_mode.py for why divert is the business default.
+VOICE_MODE = _voice_mode()
+
+# The intake address the agent reads out in divert mode. This must be a mailbox
+# the support sweep actually polls — `support@crossub.com.au` is the one that
+# already runs AI triage + auto-reply, and leasing@/maintenance@/inspection@
+# route into it (see mailbox-routing.constants.ts in crossub_web).
+INTAKE_EMAIL = os.getenv("VOICE_INTAKE_EMAIL", "support@crossub.com.au").strip()
+
+# Optional SMS intake number, spoken as a second option ("or text us on ...").
+# BLANK BY DEFAULT AND IT MUST STAY THAT WAY UNTIL SMS ACTUALLY EXISTS: as of
+# Aug 2026 crossub_web has no SMS provider at all (no Twilio, no sendSms), so
+# nothing can receive a text. Setting this before the integration lands would
+# send tenants into a black hole. Set it only once inbound SMS is delivered
+# somewhere the team reads.
+INTAKE_SMS_NUMBER = (os.getenv("VOICE_INTAKE_SMS_NUMBER") or "").strip() or None
 
 
 # --- Speech-to-text (Deepgram) ---

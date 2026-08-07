@@ -1,5 +1,26 @@
 # Changelog
 
+## 2026-08-08
+
+### Added
+- **Divert mode — the phone line now hands tenant enquiries to email instead of answering them.** CROSSUB publishes a single Calilio number and it is tenant-facing, so every inbound call is a tenant enquiry. The business decision is that those are handled on the email channel, where `support@crossub.com.au` already runs AI triage *and* AI auto-reply end to end (`support-email-triage.service.ts`). The phone's job is now to get the enquiry onto that channel: the agent hears the gist in EN/中文, acknowledges it in one sentence so the caller feels heard, reads out the intake address, and closes. New `VOICE_MODE` env var selects the behaviour — `divert` (the default) or `full` (the previous self-service assistant).
+- `crossub_voice_agent/constants/` with the `VoiceMode` enum, so the mode is never compared as a bare string. New leaf package: it imports nothing else in the package, letting `config.py` depend on it without a cycle.
+- `VOICE_INTAKE_EMAIL` (default `support@crossub.com.au`) — the address the agent reads out — and `prompts.spoken_email()`, which renders it as "support at crossub dot com dot au". TTS swallows "@" and runs the dots together, and a tenant who mishears the address never writes in, which defeats the whole point of the call.
+- `VOICE_INTAKE_SMS_NUMBER`, an optional second channel spoken as "you can also text the details to …". **Deliberately blank by default**: `crossub_web` has no SMS provider of any kind today (no Twilio, no `sendSms`, nothing in `package.json`), so a text sent to that number would reach nobody. The wiring exists so the line can be switched on the day inbound SMS actually lands somewhere the team reads.
+- `OUTCOME_DIVERTED_TO_EMAIL` on `CallState`, plus a `default_outcome` field set from the answer mode. A divert call takes no action *by design*, which is a different fact from a full-mode call where the agent had tools and used none — keeping them distinct is what makes divert volume measurable in the Comm Hub.
+
+### Changed
+- **In divert mode the agent is constructed with an empty tool list.** Removing the capability beats instructing the model not to use it: with no tools registered it cannot read an account or write a record even if a caller talks it into trying. The 19 tools and the whole verify/token machinery are untouched and still load under `VOICE_MODE=full`, so the pivot is reversible without a revert.
+- `CrossubAssistant.__init__` now takes its instructions and tool list rather than hardcoding `SYSTEM_PROMPT` + `ALL_TOOLS`; `agent.build_agent_profile()` resolves the mode into one `AgentProfile` (instructions, tools, greeting, default outcome) so the two modes can never be half-applied — e.g. the divert persona running with the action tools still registered.
+- An unrecognised `VOICE_MODE` falls back to `divert`, not `full`. A typo must never silently arm an agent that can read tenant data.
+- The divert greeting deliberately does **not** mention email until the caller has been heard — opening with "please email us" reads as a brush-off.
+- The worker now logs the mode, tool count, and intake address when it answers, so which behaviour is live is visible in the Render logs without reading the env.
+
+### Fixed
+- **The compliance disclosure no longer offers a person who isn't there.** It ended with "You can ask to speak with a person at any time", but divert mode has no live transfer and the agent only ever directs to email — the very first thing a caller heard was a promise the call could not keep. The divert disclosure now closes with "Our team follows up on enquiries by email rather than by phone" (中文: 咨询事项将由我们的团队通过电子邮件跟进和回复). The AI disclosure and the AU call-recording consent are untouched — only the handoff sentence changed.
+- The disclosure is now **per mode**, carried on `AgentProfile` alongside the prompt and greeting, so `full` keeps its original wording. A single global rewrite would have had the full-mode agent promise an email reply while its own script asks the caller for a callback *number*.
+- Deliberately worded as how the team operates, not as a promise to email *this* caller: for an unrecognised number CROSSUB has no address to reply to (`VoiceCallerLinkService` only resolves an email for a human-confirmed, still-active caller link), which is precisely why the script asks them to write in.
+
 ## 2026-07-23
 
 ### Added

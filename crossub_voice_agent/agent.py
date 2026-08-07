@@ -15,6 +15,7 @@ import asyncio
 import logging
 import re
 import time
+from typing import NamedTuple
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -38,10 +39,13 @@ from . import config
 from . import prompts
 from . import tools
 from .call_state import (
+    OUTCOME_DIVERTED_TO_EMAIL,
+    OUTCOME_GENERAL_ENQUIRY,
     TRANSCRIPT_AGENT_LABEL,
     TRANSCRIPT_CALLER_LABEL,
     CallState,
 )
+from .constants import VoiceMode
 
 load_dotenv()
 
@@ -80,14 +84,13 @@ def apply_tts_language(tts: elevenlabs.TTS, lang: str) -> None:
 
 
 class CrossubAssistant(Agent):
-    """The CROSSUB persona, with the voice action tools (verify + token-scoped reads,
-    move-out via create_end_leasing, and repair lodging via report_maintenance) that
-    POST to the Nest voice API."""
+    """The CROSSUB persona. What it can actually DO is decided by the profile it is
+    built with: in FULL mode it carries the voice action tools (verify + token-scoped
+    reads, move-out, repair lodging) that POST to the Nest voice API; in DIVERT mode
+    it carries none at all."""
 
-    def __init__(self, tts: elevenlabs.TTS) -> None:
-        # Register the Claude function-calling tools (verify/read, create_end_leasing,
-        # report_maintenance) so the LLM can take real CROSSUB actions mid-call.
-        super().__init__(instructions=prompts.SYSTEM_PROMPT, tools=tools.ALL_TOOLS)
+    def __init__(self, tts: elevenlabs.TTS, instructions: str, agent_tools: list) -> None:
+        super().__init__(instructions=instructions, tools=agent_tools)
         self._tts_ref = tts
         self._spoken_language: str | None = None
 
@@ -101,6 +104,49 @@ class CrossubAssistant(Agent):
             self._spoken_language = lang
             apply_tts_language(self._tts_ref, lang)
             logger.info("Matched TTS voice/language to caller: %s", lang)
+
+
+class AgentProfile(NamedTuple):
+    """What the agent is for this call: its persona, the tools it may use, and how
+    it opens. Bundled so the two modes can never be half-applied — e.g. the divert
+    persona running with the action tools still registered."""
+
+    instructions: str
+    agent_tools: list
+    greeting_instructions: str
+    default_outcome: str
+    # Fixed-wording compliance disclosure, per mode: the handoff sentence differs
+    # because divert mode has no live transfer to offer.
+    disclosure_en: str
+    disclosure_zh: str
+
+
+def build_agent_profile() -> AgentProfile:
+    """Resolve the configured VOICE_MODE into a concrete profile.
+
+    DIVERT passes an EMPTY tool list on purpose. Removing the capability beats
+    instructing the model not to use it: with no tools registered the agent cannot
+    read an account or write a record even if a caller talks it into trying.
+    """
+    if config.VOICE_MODE is VoiceMode.FULL:
+        return AgentProfile(
+            instructions=prompts.SYSTEM_PROMPT,
+            agent_tools=tools.ALL_TOOLS,
+            greeting_instructions=prompts.GREETING_INSTRUCTIONS,
+            default_outcome=OUTCOME_GENERAL_ENQUIRY,
+            disclosure_en=prompts.DISCLOSURE_EN,
+            disclosure_zh=prompts.DISCLOSURE_ZH,
+        )
+    return AgentProfile(
+        instructions=prompts.build_divert_system_prompt(
+            config.INTAKE_EMAIL, config.INTAKE_SMS_NUMBER
+        ),
+        agent_tools=[],
+        greeting_instructions=prompts.DIVERT_GREETING_INSTRUCTIONS,
+        default_outcome=OUTCOME_DIVERTED_TO_EMAIL,
+        disclosure_en=prompts.DIVERT_DISCLOSURE_EN,
+        disclosure_zh=prompts.DIVERT_DISCLOSURE_ZH,
+    )
 
 
 def _build_tts() -> elevenlabs.TTS:
@@ -176,9 +222,18 @@ async def entrypoint(ctx: JobContext) -> None:
     # Per-call state, attached to the session as `userdata`. The verify tools stash the
     # minted token + caller name/type here; report_maintenance and the end-of-call log
     # hook read it. call_id is the LiveKit room name (stable for the whole call).
+    profile = build_agent_profile()
+    logger.info(
+        "Answering in %s mode (tools=%d, intake=%s)",
+        config.VOICE_MODE.value,
+        len(profile.agent_tools),
+        config.INTAKE_EMAIL if config.VOICE_MODE is VoiceMode.DIVERT else "n/a",
+    )
+
     call_state = CallState(
         call_id=ctx.room.name or f"session-{id(ctx.room):x}",
         caller_phone=_extract_caller_phone(caller) if caller else None,
+        default_outcome=profile.default_outcome,
     )
 
     tts = _build_tts()
@@ -233,20 +288,20 @@ async def entrypoint(ctx: JobContext) -> None:
 
     await session.start(
         room=ctx.room,
-        agent=CrossubAssistant(tts),
+        agent=CrossubAssistant(tts, profile.instructions, profile.agent_tools),
         room_input_options=_room_input_options(),
     )
 
     # Fixed-wording compliance disclosure (uninterruptible). Speak each half in its
     # own-language voice so the 中文 isn't read by the English voice with an accent.
     apply_tts_language(tts, "en")
-    await session.say(prompts.DISCLOSURE_EN, allow_interruptions=False)
+    await session.say(profile.disclosure_en, allow_interruptions=False)
     apply_tts_language(tts, "zh")
-    await session.say(prompts.DISCLOSURE_ZH, allow_interruptions=False)
+    await session.say(profile.disclosure_zh, allow_interruptions=False)
     # Back to the English voice for the greeting; the caller's first turn then sets
     # the language for the rest of the call (see on_user_turn_completed).
     apply_tts_language(tts, "en")
-    await session.generate_reply(instructions=prompts.GREETING_INSTRUCTIONS)
+    await session.generate_reply(instructions=profile.greeting_instructions)
 
 
 def main() -> None:
